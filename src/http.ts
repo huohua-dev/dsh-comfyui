@@ -3,6 +3,7 @@
  * dshmarket bundle uses for its own same-origin API.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { rejectUntrusted } from './route-guard.js'
 
 /** Send a JSON response with no-store caching. */
 export function sendJson(response: ServerResponse, status: number, body: unknown): void {
@@ -32,13 +33,13 @@ export async function readRawBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
-/** Whether a request originates from the page that served it (Origin vs Host). */
+/**
+ * Whether a request passes the browser-trust fence (route-guard.ts): loopback
+ * Host, not cross-site, matching Origin. Every route is already wrapped in
+ * that guard; this stays for the write handlers' own belt-and-braces checks.
+ */
 export function sameOrigin(request: IncomingMessage): boolean {
-  const origin = request.headers.origin
-  const host = request.headers.host
-  if (origin === undefined) return true
-  if (host === undefined) return false
-  return origin === `http://${host}` || origin === `https://${host}`
+  return rejectUntrusted(request) === undefined
 }
 
 /** Human-readable error message from an unknown thrown value. */
