@@ -8,7 +8,7 @@
  * parameters in the panel by picking any node input manually.
  */
 import { randomUUID } from 'node:crypto'
-import { h3Frames, h3SecondsOf } from './templates.js'
+import { H3_MAX_SECONDS, h3Frames, h3SecondsOf } from './templates.js'
 
 /** One exposed, adjustable parameter of a saved workflow. */
 export interface WorkflowParameter {
@@ -57,6 +57,42 @@ export interface WorkflowParameter {
   multipleOf?: number
   /** The run is refused when no value is given and the default is empty. */
   required?: boolean
+  /** Optional sub-graph: when the parameter's effective value is empty, these
+   * nodes are cut out of the prompt and their consumers re-wired (see
+   * `PruneSpec` and `pruneWorkflowNodes`). */
+  prune?: PruneSpec
+  /** Extra inputs that receive the same (converted) value, e.g. the
+   * ImageScale nodes that must resize keyframes to the output width/height. */
+  mirrors?: Array<{ nodeId: string; inputKey: string }>
+  /** false: never filled from the panel's load area (an optional reference
+   * that should only be used when the caller names a file explicitly). */
+  loadArea?: false
+  /** false: this image's recorded pixel size never becomes the default
+   * width/height (a character reference is not the output canvas). */
+  matchSize?: false
+}
+
+/**
+ * How an optional parameter removes its sub-graph when left empty.
+ *
+ * Why this exists: an optional media input (a second reference image, a
+ * keyframe) is a *chain of nodes* — LoadImage → ImageScale → a guide node
+ * spliced into the conditioning chain — not a single input value. ComfyUI
+ * validates every node that feeds an output, so a LoadImage left with an
+ * empty file name fails the whole prompt. The `upload: 'media'` slot mechanism
+ * cannot help: it edits one JSON array inside a single input string. So an
+ * empty value here removes the nodes outright and closes the graph around the
+ * hole instead.
+ */
+export interface PruneSpec {
+  /** Node ids removed when the value is empty (ids missing from the workflow are ignored). */
+  nodes: string[]
+  /** Pass-through nodes (single-output filters inside a chain, e.g. a guide
+   * on the conditioning or a LoRA on the model): removed node id → the input
+   * key whose value replaces every reference to its output. Consumers of a
+   * removed node without a pass-through lose that input key instead — right
+   * for optional and autogrow inputs such as `ref_images.ref_image_1`. */
+  passthrough?: Record<string, string>
 }
 
 type Workflow = Record<string, { class_type: string; inputs: Record<string, unknown> }>
@@ -485,7 +521,7 @@ export function analyzeWorkflowParameters(workflow: Workflow, objectInfo?: Recor
         if (key === 'length') {
           if (take('duration', 1)) {
             add({ name: 'seconds', label: '时长（秒）', type: 'number', nodeId: id, inputKey: key, value: h3SecondsOf(raw), classType,
-              extra: { transform: 'h3_seconds_to_frames', numberKind: 'float', min: 0.2, max: 149, step: undefined } })
+              extra: { transform: 'h3_seconds_to_frames', numberKind: 'float', min: 0.2, max: H3_MAX_SECONDS, step: undefined } })
           }
           continue
         }
@@ -612,6 +648,7 @@ export function applyWorkflowParameters(
     for (const param of parameters) {
       const kind = param.upload
       if (kind !== 'image' && kind !== 'video' && kind !== 'audio') continue
+      if (param.loadArea === false) continue
       if (Object.prototype.hasOwnProperty.call(effectiveValues, param.name)) continue
       // An audio parameter may also take a video slot: ComfyUI's LoadAudio
       // accepts a video container and pulls its audio track, and the load
@@ -630,6 +667,7 @@ export function applyWorkflowParameters(
   if (imageSizes !== undefined) {
     const imageParam = parameters.find((param) =>
       param.upload === 'image' &&
+      param.matchSize !== false &&
       Object.prototype.hasOwnProperty.call(effectiveValues, param.name) &&
       typeof effectiveValues[param.name] === 'string' &&
       imageSizes[String(effectiveValues[param.name])] !== undefined,
@@ -664,6 +702,7 @@ export function applyWorkflowParameters(
   // selected parent value, so static option validation would reject valid
   // combinations (ComfyUI validates the actual pair at queue time).
   const comboChildKeys = new Set([...combos.values()].map(({ nodeId, child }) => `${nodeId}:${child.childInputKey}`))
+  const prunes: PruneSpec[] = []
   for (const param of parameters) {
     const node = copy[param.nodeId]
     if (node === undefined) continue
@@ -675,6 +714,27 @@ export function applyWorkflowParameters(
       value = Math.floor(Math.random() * 2 ** 32)
     } else {
       value = param.default
+    }
+    const empty = value === undefined || value === null || (typeof value === 'string' && value.trim() === '')
+    // Checked before the loader skip below: a required file parameter must
+    // fail here rather than run with whatever name the template authored.
+    if (empty && param.required === true) {
+      throw new Error(`缺少参数 ${param.name}（${param.label}）`)
+    }
+    // An optional sub-graph left empty is cut out once every value has been
+    // written (so mirrors into it stay harmless); see PruneSpec.
+    if (empty && param.prune !== undefined) {
+      prunes.push(param.prune)
+      if (effective !== undefined) effective[param.name] = ''
+      continue
+    }
+    /** Write the final value to the parameter's input and to its mirrors. */
+    const write = (next: unknown): void => {
+      node.inputs[param.inputKey] = next
+      for (const mirror of param.mirrors ?? []) {
+        const target = copy[mirror.nodeId]
+        if (target !== undefined) target.inputs[mirror.inputKey] = next
+      }
     }
     // A loader parameter with an empty default and nothing to fill it (no
     // explicit value, no load-area slot of its kind) leaves the workflow's
@@ -689,9 +749,6 @@ export function applyWorkflowParameters(
     // sever the link on every run, so an omitted value leaves the link alone —
     // only an explicit value replaces it.
     if (!explicit && param.default === '' && !isPrimitive(node.inputs[param.inputKey]) && node.inputs[param.inputKey] !== undefined) continue
-    if (param.required === true && (value === undefined || value === null || value === '')) {
-      throw new Error(`缺少参数 ${param.name}（${param.label}）`)
-    }
     if (param.type === 'number' && typeof value === 'number') {
       if (!Number.isFinite(value)) throw new Error(`parameter "${param.name}" must be a finite number`)
       if (param.multipleOf !== undefined && param.multipleOf > 0 && value % param.multipleOf !== 0) {
@@ -703,7 +760,7 @@ export function applyWorkflowParameters(
         const frames = h3Frames(value)
         if (frames > 3600) throw new Error(`参数 ${param.name}=${value} 秒换算为 ${frames} 帧，超过 H3 上限 3600 帧`)
         if (effective !== undefined) effective[param.name] = value
-        node.inputs[param.inputKey] = frames
+        write(frames)
         continue
       }
     }
@@ -731,7 +788,7 @@ export function applyWorkflowParameters(
     }
     if (effective !== undefined) effective[param.name] = value
     if (param.upload === 'media') continue // merged back into the JSON array below
-    node.inputs[param.inputKey] = value
+    write(value)
   }
   for (const [paramName, combo] of combos) {
     // An explicit child value (parameter or raw key) wins over linking.
@@ -806,5 +863,120 @@ export function applyWorkflowParameters(
       node.inputs[first.inputKey] = JSON.stringify(items.filter((_, i) => !drop.has(i)))
     }
   }
+  if (prunes.length > 0) {
+    const removals = new Map<string, string | undefined>()
+    for (const spec of prunes) {
+      for (const nodeId of spec.nodes) removals.set(nodeId, spec.passthrough?.[nodeId])
+    }
+    return pruneWorkflowNodes(copy, removals)
+  }
   return copy
+}
+
+/** Whether an input value is a node reference (`[nodeId, slot]`). */
+function isLink(value: unknown): value is [string, number] {
+  return Array.isArray(value) && value.length === 2 && typeof value[0] === 'string' && typeof value[1] === 'number'
+}
+
+/**
+ * Every `[nodeId, slot]` reference that points at a node missing from the
+ * workflow, as readable `node.input → id` strings. The same integrity rule
+ * convert.ts applies to an extracted graph; empty means the prompt is closed.
+ */
+export function danglingReferences(workflow: Workflow): string[] {
+  const problems: string[] = []
+  for (const [id, node] of Object.entries(workflow)) {
+    for (const [key, value] of Object.entries(node.inputs)) {
+      if (isLink(value) && workflow[value[0]] === undefined) problems.push(`${id}.${key} → ${value[0]}`)
+    }
+  }
+  return problems
+}
+
+/** Autogrow flat keys: `<group>.<name>_<index>`, e.g. `ref_images.ref_image_1`. */
+const AUTOGROW_KEY = /^(.+\..*_)(\d+)$/
+
+/**
+ * Remove nodes from a workflow copy and re-wire what consumed them.
+ *
+ * `removals` maps each removed node id to a pass-through input key (or
+ * undefined). A consumer input that referenced a removed node takes the
+ * removed node's pass-through value instead — followed transitively, so two
+ * stacked guides both closing collapse onto the original conditioning — or,
+ * without a pass-through, the consumer input key is deleted.
+ *
+ * Deleted autogrow keys leave a gap (`ref_image_0`, `ref_image_2`); the
+ * remaining keys of that group are renumbered contiguously from the group's
+ * first index. ComfyUI rebuilds an autogrow input from its template names in
+ * order and the prompt addresses them by position (`<Picture 2>` = second
+ * connected image), so a gap would either drop the later reference or shift
+ * its meaning.
+ *
+ * Throws when the result still references a missing node (a removed node
+ * without pass-through feeding a required input is a template bug that must
+ * not reach the server).
+ */
+export function pruneWorkflowNodes(workflow: Workflow, removals: Map<string, string | undefined>): Workflow {
+  const source = workflow // read-only: pass-through values come from the removed nodes as authored
+  const out: Workflow = {}
+  for (const [id, node] of Object.entries(source)) {
+    if (!removals.has(id)) out[id] = structuredClone(node)
+  }
+  const resolve = (link: [string, number]): unknown => {
+    let current: unknown = link
+    const seen = new Set<string>()
+    while (isLink(current) && removals.has(current[0])) {
+      const id: string = current[0]
+      if (seen.has(id)) throw new Error(`剪除节点时发现直通环：${[...seen, id].join(' → ')}`)
+      seen.add(id)
+      const key = removals.get(id)
+      const removed = source[id]
+      if (key === undefined || removed === undefined) return undefined
+      current = removed.inputs[key]
+      if (current === undefined) return undefined
+    }
+    return isLink(current) ? [current[0], current[1]] : current
+  }
+  for (const node of Object.values(out)) {
+    const dropped: string[] = []
+    for (const [key, value] of Object.entries(node.inputs)) {
+      if (!isLink(value) || !removals.has(value[0])) continue
+      const next = resolve(value)
+      if (next === undefined) {
+        delete node.inputs[key]
+        dropped.push(key)
+      } else {
+        node.inputs[key] = next
+      }
+    }
+    if (dropped.length > 0) node.inputs = compactAutogrow(node.inputs, dropped)
+  }
+  const dangling = danglingReferences(out)
+  if (dangling.length > 0) throw new Error(`剪除可选节点后工作流仍引用了不存在的节点：${dangling.join('，')}`)
+  return out
+}
+
+/** Renumber the autogrow groups that lost keys so their indices stay contiguous. */
+function compactAutogrow(inputs: Record<string, unknown>, dropped: string[]): Record<string, unknown> {
+  const rename = new Map<string, string>()
+  const groups = new Map<string, number>() // prefix → first original index
+  for (const key of dropped) {
+    const match = AUTOGROW_KEY.exec(key)
+    if (match === null) continue
+    const prefix = match[1]!
+    const index = Number(match[2])
+    groups.set(prefix, Math.min(groups.get(prefix) ?? index, index))
+  }
+  for (const [prefix, first] of groups) {
+    const members = Object.keys(inputs)
+      .map((key) => ({ key, match: AUTOGROW_KEY.exec(key) }))
+      .filter((entry) => entry.match !== null && entry.match[1] === prefix)
+      .map((entry) => ({ key: entry.key, index: Number(entry.match![2]) }))
+    let base = first
+    for (const member of members) base = Math.min(base, member.index)
+    members.sort((a, b) => a.index - b.index)
+    members.forEach((member, i) => rename.set(member.key, `${prefix}${base + i}`))
+  }
+  if (rename.size === 0) return inputs
+  return Object.fromEntries(Object.entries(inputs).map(([key, value]) => [rename.get(key) ?? key, value]))
 }

@@ -1,6 +1,6 @@
 /** MiniMax H3 text-to-video template: frame rule, graph fidelity, parameters. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { H3_MODELS, findTemplate, h3Frames, h3SecondsOf } from '../src/templates.js'
+import { H3_MAX_SECONDS, H3_MODELS, findTemplate, h3Frames, h3SecondsOf } from '../src/templates.js'
 import { analyzeWorkflowParameters, applyWorkflowParameters, refreshParameterMetadata } from '../src/params.js'
 import { buildWorkflow } from '../src/tools.js'
 import { startFakeComfy, type FakeComfy } from './fake-comfy.js'
@@ -94,6 +94,15 @@ describe('h3_t2v template', () => {
     expect(graph['5']!.inputs.length).toBe(39)
   })
 
+  it('advertises the 5–15 s training range: seconds max 15.1 = 362 frames', () => {
+    const seconds = findTemplate('h3_t2v')!.parameters!.find((param) => param.name === 'seconds')!
+    expect(seconds.max).toBe(15.1)
+    expect(h3Frames(seconds.max!)).toBe(362)
+    expect(h3Frames(15)).toBe(362)
+    expect(seconds.description).toContain('5–15 秒')
+    expect(render({ prompt: 'x', seconds: 15 })['5']!.inputs.length).toBe(362)
+  })
+
   it('keeps the Wan 2.1 video template', () => {
     expect(findTemplate('video')?.workflow['14']?.class_type).toBe('WanImageToVideo')
   })
@@ -113,7 +122,7 @@ describe('auto-detected parameters on an H3 graph', () => {
     const params = analyzeWorkflowParameters(findTemplate('h3_t2v')!.workflow)
     const objectInfo = { MiniMaxH3ImageToVideo: { input: { required: { length: ['INT', { min: 5, max: 3600, step: 17 }] } } } }
     const { parameters } = refreshParameterMetadata(params, objectInfo, findTemplate('h3_t2v')!.workflow)
-    expect(parameters.find((param) => param.name === 'seconds')).toMatchObject({ numberKind: 'float', max: 149 })
+    expect(parameters.find((param) => param.name === 'seconds')).toMatchObject({ numberKind: 'float', max: H3_MAX_SECONDS })
   })
 })
 

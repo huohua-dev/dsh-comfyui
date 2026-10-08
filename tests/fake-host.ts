@@ -27,8 +27,8 @@ export interface FakeHost {
   dataDir: string
   tools: Map<string, ToolDef>
   jobs: ReturnType<typeof fakeJobs>
-  /** Execute a tool as session `session-1`. */
-  call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>
+  /** Execute a tool as session `session-1` (pass `agent` to add e.g. a session cwd). */
+  call(name: string, args: Record<string, unknown>, signal?: AbortSignal, agent?: Record<string, unknown>): Promise<unknown>
   /** Browser-like fetch against the plugin routes (loopback Host + auth cookie by default). */
   fetch(path: string, init?: RequestInit & { rawHeaders?: Record<string, string> }): Promise<Response>
   dispose(): Promise<void>
@@ -124,10 +124,10 @@ export async function bootPlugin(config: Record<string, unknown>, opts: { connec
     dataDir,
     tools,
     jobs,
-    call(name, args, signal) {
+    call(name, args, signal, agent) {
       const tool = tools.get(name)
       if (tool === undefined) throw new Error(`no tool ${name}`)
-      return tool.execute(args, { agent: { id: 'session-1' }, signal: signal ?? new AbortController().signal })
+      return tool.execute(args, { agent: { id: 'session-1', ...agent }, signal: signal ?? new AbortController().signal })
     },
     fetch(path, init = {}) {
       const headers = new Headers(init.headers)

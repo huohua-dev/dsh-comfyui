@@ -26,7 +26,7 @@ export interface FakeComfy {
   running: FakePrompt[]
   pending: FakePrompt[]
   history: Map<string, Record<string, unknown>>
-  /** Files served by /view, keyed `type/subfolder/filename`. */
+  /** Files served by /view (and written by /upload/image), keyed `type/subfolder/filename`. */
   files: Map<string, Buffer>
   /** Interrupt flags raised per prompt id (what a real server would abort). */
   interrupted: string[]
@@ -39,13 +39,23 @@ export interface FakeComfy {
   close(): Promise<void>
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', reject)
   })
+}
+
+/** ComfyUI's /upload/image naming: without overwrite, a clash becomes `name (1).ext`. */
+function freeName(files: Map<string, Buffer>, subfolder: string, name: string): string {
+  const dot = name.lastIndexOf('.')
+  const stem = dot > 0 ? name.slice(0, dot) : name
+  const ext = dot > 0 ? name.slice(dot) : ''
+  let candidate = name
+  for (let i = 1; files.has(`input/${subfolder}/${candidate}`); i += 1) candidate = `${stem} (${i})${ext}`
+  return candidate
 }
 
 function json(res: ServerResponse, status: number, value: unknown): void {
@@ -86,7 +96,21 @@ export async function startFakeComfy(): Promise<FakeComfy> {
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://x')
       const path = url.pathname
-      const raw = req.method === 'POST' ? await readBody(req) : ''
+      const bytes = req.method === 'POST' ? await readBody(req) : Buffer.alloc(0)
+      if (path === '/upload/image' && req.method === 'POST') {
+        // Multipart like the real server: field "image" (file), "subfolder", "overwrite".
+        const form = await new Response(bytes, { headers: { 'content-type': req.headers['content-type'] ?? '' } }).formData()
+        const file = form.get('image')
+        if (typeof file === 'string' || file === null) return json(res, 400, { error: 'image field required' })
+        const subfolder = String(form.get('subfolder') ?? '')
+        const overwrite = ['true', '1'].includes(String(form.get('overwrite') ?? 'false'))
+        const name = overwrite ? file.name : freeName(state.files, subfolder, file.name)
+        const content = Buffer.from(await file.arrayBuffer())
+        state.files.set(`input/${subfolder}/${name}`, content)
+        state.log.push({ method: 'POST', path, body: { filename: file.name, subfolder, overwrite, size: content.length } })
+        return json(res, 200, { name, subfolder, type: 'input' })
+      }
+      const raw = bytes.toString('utf8')
       let body: unknown
       try { body = raw === '' ? undefined : JSON.parse(raw) } catch { body = raw }
       state.log.push({ method: req.method ?? 'GET', path: `${path}${url.search}`, ...(body !== undefined ? { body } : {}) })

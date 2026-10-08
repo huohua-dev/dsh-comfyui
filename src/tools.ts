@@ -3,7 +3,8 @@
  * registry. `comfyui_run` submits a workflow and returns media results
  * (synchronously or as a background job); `comfyui_object_info` exposes the
  * server's node definitions; `comfyui_workflow` lists and runs saved
- * workflows from the panel-managed workflow library.
+ * workflows from the panel-managed workflow library; `comfyui_upload` puts a
+ * local media file into ComfyUI's input directory.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './config.js'
@@ -19,6 +20,7 @@ import { SKILL_MAIN, joinFrontmatter, type WorkflowSkillPacks } from './skillpac
 import { ownerSessionOf, startGenerationJob, type JobsService } from './jobs.js'
 import { describeParameters, draftForSave, draftForUpdate, type RunRecord } from './library.js'
 import type { RunArchive } from './archive.js'
+import { MAX_UPLOAD_BYTES, UPLOAD_EXTENSIONS, uploadLocalFile, type UploadResult } from './upload.js'
 
 /** A workflow saved on the ComfyUI server (userdata/workflows), with extract status. */
 export interface ComfyUIComfyWorkflow {
@@ -97,6 +99,10 @@ export interface ComfyUIRuntime {
    * when the server has no such endpoint). Call before re-deriving parameter
    * snapshots so object_info reports newly added voices. */
   refreshVoiceLibrary(): Promise<boolean>
+  /** Put one file into ComfyUI's input directory (multipart /upload/image).
+   * Returns the server's final name and subfolder — with `overwrite: false`
+   * ComfyUI may rename a clashing file, so callers must use what comes back. */
+  uploadInput(bytes: Uint8Array, filename: string, opts: { subfolder?: string; overwrite?: boolean }): Promise<{ name: string; subfolder: string; type: string }>
   /** Pixel sizes of panel-uploaded files, keyed by file name. */
   listMediaSizes(): Promise<Record<string, { width: number; height: number }>>
   /** Record the pixel size of one uploaded file. */
@@ -141,6 +147,12 @@ export interface QueuedPrompt {
 interface ToolRunContext {
   agent?: unknown
   signal: AbortSignal
+}
+
+/** The calling session's workspace (`exec.agent.session.header.cwd`, as DSH's own file tools read it). */
+function sessionCwd(exec: ToolRunContext): string | undefined {
+  const cwd = (exec.agent as { session?: { header?: { cwd?: unknown } } } | undefined)?.session?.header?.cwd
+  return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
 }
 
 /**
@@ -465,8 +477,9 @@ function runDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefinition {
     name: 'comfyui_run',
     description: [
       'Submit a workflow to the configured ComfyUI server and return the generated media (images/videos).',
-      'Provide exactly one of `workflow` (ComfyUI API-format object: node id → { class_type, inputs }) or `template` (built-in: txt2img | img2img | video | h3_t2v).',
-      'h3_t2v — MiniMax H3 text-to-video with sound: pass `parameters` by name {prompt (required), width, height (multiples of 32; 480p = 864×480, 768p = 1344×768), seconds (3 → 73 frames, 5 → 124), seed (random if omitted), steps (default 8)} and ALWAYS mode "async". Finished videos are downloaded to the local archive and play in a card below your reply.',
+      'Provide exactly one of `workflow` (ComfyUI API-format object: node id → { class_type, inputs }) or `template` (built-in: txt2img | img2img | video | h3_t2v | h3_r2v).',
+      'h3_t2v — MiniMax H3 text-to-video with sound: pass `parameters` by name {prompt (required), width, height (multiples of 32; 480p = 864×480, 768p = 1344×768), seconds (3 → 73 frames, 5 → 124; trained range 5–15 s), seed (random if omitted), steps (default 8)} and ALWAYS mode "async". Finished videos are downloaded to the local archive and play in a card below your reply.',
+      'h3_r2v — MiniMax H3 reference-to-video with sound: {prompt (required, official six-section format, see the dsh-comfyui-workflows skill), ref_image_1 (required) / ref_image_2 / ref_image_3 (character references = <Picture N>), ref_audio_1 (voice timbre = <Audio 1>), first_frame / last_frame (keyframes), continue_from (previous clip: its last 22 frames + audio pinned at frame 0), width/height (default 480×864), seconds (default 5, 5–15), seed, steps, ref_image_size (match|max), unet, lora}; media values are ComfyUI input file names (upload local files with comfyui_upload first); an empty optional slot removes that branch. ALWAYS mode "async".',
       'Use `inputs` to override node inputs by id, e.g. {"6": {"text": "a red cat"}} for the positive prompt in the templates.',
       'Templates: txt2img — 4 checkpoint, 5 EmptyLatentImage (width/height), 6 positive text, 7 negative text, 3 KSampler (seed/steps/cfg/denoise), 9 SaveImage. img2img — 10 LoadImage (image), 11 VAEEncode, 6 text, 3 KSampler (denoise). video — Wan 2.1, needs ComfyUI-WanVideoWrapper custom nodes (10 UNETLoader, 13 WanTextEncode, 14 WanImageToVideo, 15 KSampler, 17 SaveVideo).',
       'Inspect available node types with comfyui_object_info before hand-writing a workflow.',
@@ -477,7 +490,7 @@ function runDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefinition {
       properties: {
         workflow: { type: 'object', description: 'ComfyUI API-format workflow: node id → { class_type, inputs }. Alternative to `template`.' },
         template: { type: 'string', enum: TEMPLATES.map((t) => t.id), description: 'Built-in workflow template id. Alternative to `workflow`.' },
-        parameters: { type: 'object', description: 'Named parameter values for templates that declare them (h3_t2v: prompt, width, height, seconds, seed, steps).' },
+        parameters: { type: 'object', description: 'Named parameter values for templates that declare them (h3_t2v: prompt, width, height, seconds, seed, steps; h3_r2v adds ref_image_1..3, ref_audio_1, first_frame, last_frame, continue_from, ref_image_size, unet, lora).' },
         inputs: { type: 'object', description: 'Per-node input overrides keyed by node id, e.g. {"3": {"seed": 42, "steps": 30}, "6": {"text": "prompt"}}.' },
         mode: { type: 'string', enum: ['sync', 'async'], default: 'sync', description: 'sync waits and returns media; async returns a background job id.' },
         timeout_ms: { type: 'number', minimum: 5_000, maximum: 3_600_000, description: 'Generation wait budget in ms (default 180000). Video needs minutes.' },
@@ -1204,6 +1217,54 @@ function skillDefinition(runtime: ComfyUIRuntime): ToolDefinition {
   }
 }
 
+/**
+ * `comfyui_upload`: put one local media file into ComfyUI's input directory.
+ * Validation (path, extension allow-list, size cap, subfolder grammar) lives
+ * in upload.ts; the bytes travel through the runtime's client, never a client
+ * built here.
+ */
+function uploadDefinition(runtime: ComfyUIRuntime): ToolDefinition {
+  return {
+    name: 'comfyui_upload',
+    description: [
+      'Upload one local media file (absolute path, or relative to the session working directory) into the ComfyUI server\'s input directory and return its server-side reference.',
+      'Put the returned `ref` (`subfolder/name` or `name`) straight into LoadImage.image / LoadAudio.audio / LoadVideo.file, or into template parameters such as h3_r2v ref_image_1 / ref_audio_1 / first_frame / continue_from.',
+      `Allowed types: ${[...UPLOAD_EXTENSIONS].join(', ')}; at most ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.`,
+      'Optional `subfolder` (one directory level: letters, digits, underscore, dash) keeps a project\'s references together; `overwrite: true` replaces a same-named file, otherwise ComfyUI may store it under a new name — always use the returned ref.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Local file path: absolute, or relative to the session working directory.' },
+        subfolder: { type: 'string', description: 'Optional subfolder under ComfyUI input/ (single segment, [A-Za-z0-9_-]).' },
+        overwrite: { type: 'boolean', description: 'Replace an existing file with the same name (default false).' },
+      },
+      required: ['path'],
+    },
+    output: {
+      schema: { type: 'object' },
+      render(_args, value) {
+        const result = value as UploadResult
+        const loader = result.kind === 'image' ? 'LoadImage.image' : result.kind === 'audio' ? 'LoadAudio.audio' : 'LoadVideo.file'
+        const size = result.size !== undefined ? `，${result.size.width}×${result.size.height}` : ''
+        return [{ type: 'text', text: `已上传到 ComfyUI input：${result.ref}（${result.kind}，${result.bytes} 字节${size}）。可直接填 ${loader} 或模板的媒体参数。` }]
+      },
+      presentationMeta(_args, value) {
+        return value
+      },
+    },
+    timeoutMs: 600_000,
+    async execute(args, exec) {
+      return uploadLocalFile(runtime, {
+        path: args.path,
+        subfolder: args.subfolder,
+        overwrite: args.overwrite,
+        cwd: sessionCwd(exec),
+      })
+    },
+  }
+}
+
 /** Register the plugin tools; returns disposers. */
 export function registerComfyUITools(ctx: Context, runtime: ComfyUIRuntime): Array<() => void> {
   const tools = (ctx as unknown as { tools: { register(definition: ToolDefinition): () => void } }).tools
@@ -1212,5 +1273,6 @@ export function registerComfyUITools(ctx: Context, runtime: ComfyUIRuntime): Arr
   disposers.push(tools.register(objectInfoDefinition(runtime)))
   disposers.push(tools.register(workflowDefinition(runtime, ctx)))
   disposers.push(tools.register(skillDefinition(runtime)))
+  disposers.push(tools.register(uploadDefinition(runtime)))
   return disposers
 }

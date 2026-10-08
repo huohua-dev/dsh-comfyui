@@ -8,9 +8,9 @@ export const COMFYUI_SKILL = {
   name: 'dsh-comfyui-workflows',
   source: 'runtime',
   description:
-    'ComfyUI 生成与工作流管理：在对话里用 MiniMax H3 文生视频（h3_t2v 模板、按秒设时长、异步后台任务、成片自动存本机、存成模板/更新/删除）；区分“图工作流”（ComfyUI 端保存的画布，衍生主题）与“API 工作流”（可执行，运行主题），分析画布中的多个独立流程（连通分量），以及图→API 提取的规则与面板操作引导。也包含本机环境（用户 ComfyUI 目录）与 TTS-Audio-Suite 音色库的快速查询/快照刷新方案。处理 comfyui_workflow、需要定位用户 ComfyUI 文件/音色库，或用户要求运行 ComfyUI 端保存的工作流时加载。',
+    'ComfyUI 生成与工作流管理：在对话里用 MiniMax H3 文生视频（h3_t2v 模板、按秒设时长、异步后台任务、成片自动存本机、存成模板/更新/删除）与参考生视频（h3_r2v：角色参考图 + 音色参考 + 首尾关键帧 + 分段续接，本机素材用 comfyui_upload 上传）；区分“图工作流”（ComfyUI 端保存的画布，衍生主题）与“API 工作流”（可执行，运行主题），分析画布中的多个独立流程（连通分量），以及图→API 提取的规则与面板操作引导。也包含本机环境（用户 ComfyUI 目录）与 TTS-Audio-Suite 音色库的快速查询/快照刷新方案。处理 comfyui_workflow、需要定位用户 ComfyUI 文件/音色库，或用户要求运行 ComfyUI 端保存的工作流时加载。',
   whenToUse:
-    '用户要求生成视频/图片、把一次运行存成模板、修改或删除已存工作流、取消生成任务时；用户要求运行/管理 ComfyUI 中保存的工作流，或 comfyui_workflow list 显示未提取的图工作流时；需要判断一个画布是否包含多个独立流程、或解释为何某个工作流无法直接运行时；需要查询 TTS-Audio-Suite 音色库、刷新已存工作流的音色参数快照、或定位用户本机 ComfyUI 目录时；或 comfyui_workflow list 里某个工作流带“技能包”标记、需要在运行前读取它时。',
+    '用户要求生成视频/图片（含用角色设定图/参考音色做角色短视频、按关键帧或上一段续接）、把一次运行存成模板、修改或删除已存工作流、取消生成任务时；用户要求运行/管理 ComfyUI 中保存的工作流，或 comfyui_workflow list 显示未提取的图工作流时；需要判断一个画布是否包含多个独立流程、或解释为何某个工作流无法直接运行时；需要查询 TTS-Audio-Suite 音色库、刷新已存工作流的音色参数快照、或定位用户本机 ComfyUI 目录时；或 comfyui_workflow list 里某个工作流带“技能包”标记、需要在运行前读取它时。',
   content: `# dsh-comfyui 工作流管理
 
 本插件把 ComfyUI 工作流分成两个主题：
@@ -30,12 +30,22 @@ comfyui_workflow 的 \`action: list\` 会同时返回：插件库中的 API 工�
   - 提示词同时描述画面和声音（H3 会生成音轨）。seed 不传就随机，实际用的 seed 记在归档 meta.json 里。
   - 不要额外加 LoRA：10Eros TURBO 已内置 Turbo，8 步即可。
   - 参考耗时：864×480 3 秒约 50 秒，1344×768 5 秒约 2 分钟（首次加载模型更久）。
+- 时长训练范围 5–15 秒（124–362 帧，15 秒 = 362 帧）；更长的片子分段生成再续接（见下节）。
 - **视频一律 \`mode: "async"\`**，提交后不要阻塞等待；后台任务面板会显示"排队中 / 采样 x/8"，完成时系统通知你。播放卡片会出现在**提交那一轮回复的下方**（对话主流程里，用户不用展开思考过程），自己显示进度并在完成后直接播放（可拖动进度条），**不用把链接贴给用户**。结果文字里有本机归档路径，用户问"存在哪"时照实说。
 - **成片自动存到本机**：每个任务一个目录 \`<archiveDir>/<prompt_id>/\`（默认插件数据目录下的 archive），里面是视频和 meta.json（prompt_id、完整工作流、seed、参数）。ComfyUI 关掉后，历史卡片仍从本机播放。
 - **存成模板**：用户说"把这个存成模板/保存这个工作流"时，用 \`comfyui_workflow { action: "save", prompt_id: <那次运行的 prompt id>, name, description }\`——会保留命名参数（含按秒的时长），那次用的值成为默认值，seed 保持随机。之后 \`comfyui_workflow { action: "run", id, parameters: { 只传要改的那一项 }, mode: "async" }\`。改默认值用 \`action: "update"\`，删除用 \`action: "delete"\`（技能包目录会保留）。
 - **取消**：用 \`job_kill\` 停掉对应后台任务。插件只取消这个任务自己的 prompt：在排队就从队列删掉，在跑就只中断它，**不会影响别的任务**。
 - **连不上 ComfyUI**：报错会写明"无法连接 ComfyUI…win 可能在 LLM 模式，需要先运行 winmode.sh video"。把这句话转告用户，**不要自己去切换模式或重试轰炸**。
 - 需要自己写工作流时：先 \`comfyui_object_info { filter }\` 查节点，再用 \`comfyui_run { workflow, mode: "async" }\` 提交；跑通后用 save 存进库。SaveVideo 的 format/codec 在 API 里是扁平键：\`"format": "auto", "format.codec": "auto"\`。
+
+## 参考生视频 h3_r2v（角色参考图 + 音色参考 + 关键帧 + 续接）
+
+- **上传素材**：本机文件先 \`comfyui_upload { path, subfolder?, overwrite? }\`（绝对路径或相对会话工作目录；只收 png/jpg/jpeg/webp/gif/wav/mp3/flac/ogg/m4a/mp4/webm/mov/mkv，≤200MB；subfolder 只能一层，如 \`sparkle\`）。返回的 \`ref\`（\`子目录/文件名\`）原样填进参数；不带 overwrite 时同名文件会被服务器改名，**永远用返回值**。
+- **运行**：\`comfyui_run { template: "h3_r2v", parameters: { prompt, ref_image_1, ref_image_2?, ref_image_3?, ref_audio_1?, first_frame?, last_frame?, continue_from?, width?, height?, seconds?, seed?, steps?, ref_image_size? }, mode: "async" }\`。默认 480×864 竖屏、5 秒、8 步（10Eros TURBO）；换官方模型用 \`unet: "minimax_h3_ref2va_pruned_int8_convrot.safetensors", lora: "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", steps: 4\`。参考图用三视图/表情表这类中性设定图，带姿势的 key visual 会被第一帧照搬。
+- **可选位不传或传空字符串 = 整条支路从工作流里剪掉**（不会留下空的 LoadImage）。\`<Picture N>\` = 第 N 张**已填**的参考图（ref_image_1→3 顺序，跳过的空位不占号），\`<Audio 1>\` = ref_audio_1。可选参考位不从加载区自动取，要用就显式传。
+- **提示词用官方六段式**，每段一个小标题行：\`subject_definitions\` / \`summary\` / \`retention_analysis\` / \`detailed_description\` / \`overall_soundscape\` / \`non_diegetic_music\`。例：\`<Subject 1> is the girl in <Picture 1> ...\`、\`<Audio 1> is the voice-timbre reference for <Subject 1> (S1).\`；台词写成 \`<Subject 1> (S1) says, <d>[Chinese] 台词</d>\`；分镜第一个写 \`[Shot 1] ...\`，之后 \`[Shot 2] At 00:04.000, ...\`。**有人声的段落 non_diegetic_music 写 N/A**（实测 BGM 会让音色参考变弱），BGM 后期统一铺。
+- **关键帧锚定**：\`first_frame\` / \`last_frame\` 自动缩放裁切到输出分辨率，钉在第 0 帧 / 最后一帧。
+- **续接**：长片按 ≤15 秒分段；下一段传 \`continue_from\` = 上一段成片（本机归档的 mp4 用 comfyui_upload 上传后填返回的 ref），它的末尾 22 帧 + 对应音频会钉在新段第 0 帧，画面与声音无缝接上；新段开头这 22 帧（约 0.92 秒）就是上一段的结尾，拼接时去掉其中一份。\`continue_from\` 与 \`first_frame\` 二选一（都钉第 0 帧）。
 
 ## 本机环境（先看这里，不要反复问用户）
 

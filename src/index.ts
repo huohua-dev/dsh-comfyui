@@ -21,6 +21,7 @@ import { COMFYUI_SKILL } from './skill.js'
 import type { StoredWorkflow } from './store.js'
 import { analyzeWorkflowParameters, applyWorkflowParameters, type Workflow } from './params.js'
 import { createWorkflowSkillPacks } from './skillpack.js'
+import { uploadContentType } from './upload.js'
 import { registerComfyUITools, type ComfyUIRuntime } from './tools.js'
 import { mountComfyUIRoutes } from './routes.js'
 import { mountComfyUIProxy } from './proxy.js'
@@ -298,6 +299,11 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
     },
     objectInfo: async () => objectInfoCached(runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))),
     skillPacks,
+    uploadInput: async (bytes, filename, opts) => {
+      const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
+      const result = await client.uploadMedia(bytes, filename, uploadContentType(filename), opts)
+      return { name: result.name ?? filename, subfolder: result.subfolder ?? opts.subfolder ?? '', type: result.type ?? 'input' }
+    },
     listMediaSizes: () => store.loadMediaSizes(),
     saveMediaSize: (name, size) => store.saveMediaSize(name, size),
     lookupMediaHash: (hash) => store.lookupMediaHash(hash),

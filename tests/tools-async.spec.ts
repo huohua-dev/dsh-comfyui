@@ -34,8 +34,8 @@ async function until(check: () => boolean, ms = 5_000): Promise<void> {
 }
 
 describe('async generation job', () => {
-  it('registers the four tools', () => {
-    expect([...host.tools.keys()].sort()).toEqual(['comfyui_object_info', 'comfyui_run', 'comfyui_skill', 'comfyui_workflow'])
+  it('registers the five tools', () => {
+    expect([...host.tools.keys()].sort()).toEqual(['comfyui_object_info', 'comfyui_run', 'comfyui_skill', 'comfyui_upload', 'comfyui_workflow'])
   })
 
   it('starts an owned job, reports progress, and settles with the media in result', async () => {
