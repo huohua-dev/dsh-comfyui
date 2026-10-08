@@ -8,6 +8,7 @@
  * parameters in the panel by picking any node input manually.
  */
 import { randomUUID } from 'node:crypto'
+import { h3Frames, h3SecondsOf } from './templates.js'
 
 /** One exposed, adjustable parameter of a saved workflow. */
 export interface WorkflowParameter {
@@ -47,6 +48,15 @@ export interface WorkflowParameter {
   upload?: 'image' | 'video' | 'audio' | 'media'
   /** Upload subdirectory (e.g. 'minimax_h3'); media files land there. */
   subfolder?: string
+  /** Value conversion before it is written to the node: the caller speaks in
+   * the parameter's unit, the node in its own. 'h3_seconds_to_frames' maps a
+   * duration onto MiniMax H3's frame grid (see templates.ts h3Frames). */
+  transform?: 'h3_seconds_to_frames'
+  /** Hard constraint checked before submit (e.g. 32 for H3 width/height),
+   * unlike `step`, which is an editor hint only. */
+  multipleOf?: number
+  /** The run is refused when no value is given and the default is empty. */
+  required?: boolean
 }
 
 type Workflow = Record<string, { class_type: string; inputs: Record<string, unknown> }>
@@ -377,6 +387,8 @@ export function analyzeWorkflowParameters(workflow: Workflow, objectInfo?: Recor
     options?: Array<string | number>
     upload?: 'image' | 'video' | 'audio' | 'media'
     subfolder?: string
+    /** Fields that override the object_info-derived ones (unit-converted parameters). */
+    extra?: Partial<WorkflowParameter>
   }): void => {
     const options = input.options ?? (input.classType !== undefined
       ? inputOptions(objectInfo, input.classType, input.inputKey)
@@ -402,6 +414,7 @@ export function analyzeWorkflowParameters(workflow: Workflow, objectInfo?: Recor
       options,
       upload: input.upload,
       subfolder: input.subfolder,
+      ...input.extra,
     })
   }
 
@@ -463,6 +476,23 @@ export function analyzeWorkflowParameters(workflow: Workflow, objectInfo?: Recor
           const parentValue = inputs[parentKey] as string
           const sizeOptions = comboChildOptions(objectInfo, classType, parentKey, parentValue)
           if (take('size', 1)) add({ name: 'size', label: '尺寸', type: 'string', nodeId: id, inputKey: key, value: raw, classType, options: sizeOptions })
+          continue
+        }
+      }
+      // MiniMax H3: the caller thinks in seconds, the node in frames on a
+      // ≡5 (mod 17) grid; width/height must be multiples of 32.
+      if (classType === 'MiniMaxH3ImageToVideo' && typeof raw === 'number') {
+        if (key === 'length') {
+          if (take('duration', 1)) {
+            add({ name: 'seconds', label: '时长（秒）', type: 'number', nodeId: id, inputKey: key, value: h3SecondsOf(raw), classType,
+              extra: { transform: 'h3_seconds_to_frames', numberKind: 'float', min: 0.2, max: 149, step: undefined } })
+          }
+          continue
+        }
+        if (key === 'width' || key === 'height') {
+          if (sizeNode !== undefined && sizeNode !== id) continue
+          sizeNode = id
+          add({ name: key, label: key === 'width' ? '宽度' : '高度', type: 'number', nodeId: id, inputKey: key, value: raw, classType, extra: { multipleOf: 32 } })
           continue
         }
       }
@@ -533,6 +563,8 @@ export function refreshParameterMetadata(
   const refreshed = parameters.map((param) => {
     const node = workflow[param.nodeId]
     if (node === undefined) return param
+    // A unit-converted parameter's bounds describe its own unit, not the node input's.
+    if (param.transform !== undefined) return param
     if (inputSpec(objectInfo, node.class_type, param.inputKey) === undefined) return param
     const next: WorkflowParameter = { ...param }
     next.options = inputOptions(objectInfo, node.class_type, param.inputKey)
@@ -657,6 +689,24 @@ export function applyWorkflowParameters(
     // sever the link on every run, so an omitted value leaves the link alone —
     // only an explicit value replaces it.
     if (!explicit && param.default === '' && !isPrimitive(node.inputs[param.inputKey]) && node.inputs[param.inputKey] !== undefined) continue
+    if (param.required === true && (value === undefined || value === null || value === '')) {
+      throw new Error(`缺少参数 ${param.name}（${param.label}）`)
+    }
+    if (param.type === 'number' && typeof value === 'number') {
+      if (!Number.isFinite(value)) throw new Error(`parameter "${param.name}" must be a finite number`)
+      if (param.multipleOf !== undefined && param.multipleOf > 0 && value % param.multipleOf !== 0) {
+        const nearest = Math.max(param.multipleOf, Math.round(value / param.multipleOf) * param.multipleOf)
+        throw new Error(`参数 ${param.name}=${value} 必须是 ${param.multipleOf} 的倍数（最接近的是 ${nearest}）`)
+      }
+      if (param.transform === 'h3_seconds_to_frames') {
+        if (value <= 0) throw new Error(`参数 ${param.name}=${value} 必须大于 0 秒`)
+        const frames = h3Frames(value)
+        if (frames > 3600) throw new Error(`参数 ${param.name}=${value} 秒换算为 ${frames} 帧，超过 H3 上限 3600 帧`)
+        if (effective !== undefined) effective[param.name] = value
+        node.inputs[param.inputKey] = frames
+        continue
+      }
+    }
     // INT inputs reject decimals at queue time; round rather than fail on a
     // value like 20.5. The stored kind wins, but a workflow saved before the
     // kind was recorded still gets it resolved from object_info here, so old

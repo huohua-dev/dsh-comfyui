@@ -8,7 +8,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './config.js'
 import type { ComfyUIClient, ComfyUIHistoryEntry } from './comfyui.js'
-import { TEMPLATES, findTemplate, cloneWorkflow, applyTemplateInputs } from './templates.js'
+import { TEMPLATES, findTemplate, cloneWorkflow, cloneParameters, applyTemplateInputs } from './templates.js'
 import type { AssetRecord, LoadSlot, StoredWorkflow } from './store.js'
 import type { GraphAnalysis } from './analyze.js'
 import type { RunProgress } from './progress.js'
@@ -218,7 +218,31 @@ function requireOneOf(args: Record<string, unknown>, names: readonly string[]): 
   return undefined
 }
 
-function buildWorkflow(args: Record<string, unknown>): { workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>; label: string } {
+type ApiWorkflow = Record<string, { class_type: string; inputs: Record<string, unknown> }>
+
+/**
+ * Resolve comfyui_run's `workflow` / `template` into the prompt to submit.
+ * Templates with named parameters (h3_t2v) are driven by `parameters`; a raw
+ * `inputs` override on a parameterized input wins, and that parameter is then
+ * dropped for this run so its default cannot overwrite the explicit value.
+ */
+export function buildWorkflow(args: Record<string, unknown>): {
+  workflow: ApiWorkflow
+  label: string
+  template?: string
+  parameters?: WorkflowParameter[]
+  values?: Record<string, unknown>
+} {
+  const inputs = args.inputs
+  if (inputs !== undefined && (typeof inputs !== 'object' || inputs === null || Array.isArray(inputs))) {
+    throw new Error('comfyui_run: inputs must be an object keyed by node id')
+  }
+  const overrides = (inputs ?? {}) as Record<string, Record<string, unknown>>
+  const rawValues = args.parameters
+  if (rawValues !== undefined && (typeof rawValues !== 'object' || rawValues === null || Array.isArray(rawValues))) {
+    throw new Error('comfyui_run: parameters must be an object keyed by parameter name')
+  }
+  const values = (rawValues ?? {}) as Record<string, unknown>
   const template = args.template
   if (typeof template === 'string') {
     const found = findTemplate(template)
@@ -226,27 +250,38 @@ function buildWorkflow(args: Record<string, unknown>): { workflow: Record<string
       throw new Error(`comfyui_run: unknown template "${template}" — use one of ${TEMPLATES.map((t) => t.id).join(', ')}`)
     }
     const workflow = cloneWorkflow(found.workflow)
-    const inputs = args.inputs
-    if (inputs !== undefined) {
-      if (typeof inputs !== 'object' || inputs === null) {
-        throw new Error('comfyui_run: inputs must be an object keyed by node id')
-      }
-      applyTemplateInputs(workflow, inputs as Record<string, Record<string, unknown>>)
+    applyTemplateInputs(workflow, overrides)
+    const parameters = cloneParameters(found.parameters)?.filter((param) =>
+      overrides[param.nodeId]?.[param.inputKey] === undefined)
+    if (parameters === undefined && Object.keys(values).length > 0) {
+      throw new Error(`comfyui_run: template "${template}" has no named parameters — use inputs keyed by node id`)
     }
-    return { workflow, label: `comfyui ${template}` }
+    if (parameters !== undefined) {
+      const known = new Set((found.parameters ?? []).map((param) => param.name))
+      const unknown = Object.keys(values).filter((name) => !known.has(name))
+      if (unknown.length > 0) {
+        throw new Error(`comfyui_run: template "${template}" has no parameter ${unknown.join(', ')} — available: ${[...known].join(', ')}`)
+      }
+    }
+    const prompt = typeof values.prompt === 'string' ? values.prompt.replace(/\s+/g, ' ').trim() : ''
+    const label = prompt !== '' ? `${found.id} · ${prompt.slice(0, 24)}${prompt.length > 24 ? '…' : ''}` : `comfyui ${template}`
+    return {
+      workflow,
+      label,
+      template: found.id,
+      ...(parameters !== undefined ? { parameters, values } : {}),
+    }
   }
   const workflow = args.workflow
-  if (typeof workflow !== 'object' || workflow === null) {
+  if (typeof workflow !== 'object' || workflow === null || Array.isArray(workflow)) {
     throw new Error('comfyui_run: workflow must be an object')
   }
-  const inputs = args.inputs
-  if (inputs !== undefined) {
-    if (typeof inputs !== 'object' || inputs === null) {
-      throw new Error('comfyui_run: inputs must be an object keyed by node id')
-    }
-    applyTemplateInputs(workflow as Record<string, { class_type: string; inputs: Record<string, unknown> }>, inputs as Record<string, Record<string, unknown>>)
+  if (Object.keys(values).length > 0) {
+    throw new Error('comfyui_run: parameters only apply to templates and saved workflows — use inputs keyed by node id for a raw workflow')
   }
-  return { workflow: workflow as Record<string, { class_type: string; inputs: Record<string, unknown> }>, label: 'comfyui custom workflow' }
+  const copy = cloneWorkflow(workflow as ApiWorkflow)
+  applyTemplateInputs(copy, overrides)
+  return { workflow: copy, label: 'comfyui custom workflow' }
 }
 
 function summarizeMedia(media: RunMediaItem[]): string {
@@ -406,7 +441,8 @@ function runDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefinition {
     name: 'comfyui_run',
     description: [
       'Submit a workflow to the configured ComfyUI server and return the generated media (images/videos).',
-      'Provide exactly one of `workflow` (ComfyUI API-format object: node id → { class_type, inputs }) or `template` (built-in: txt2img | img2img | video).',
+      'Provide exactly one of `workflow` (ComfyUI API-format object: node id → { class_type, inputs }) or `template` (built-in: txt2img | img2img | video | h3_t2v).',
+      'h3_t2v — MiniMax H3 text-to-video with sound: pass `parameters` by name {prompt (required), width, height (multiples of 32; 480p = 864×480, 768p = 1344×768), seconds (3 → 73 frames, 5 → 124), seed (random if omitted), steps (default 8)} and ALWAYS mode "async". Finished videos are downloaded to the local archive and play in the chat card.',
       'Use `inputs` to override node inputs by id, e.g. {"6": {"text": "a red cat"}} for the positive prompt in the templates.',
       'Templates: txt2img — 4 checkpoint, 5 EmptyLatentImage (width/height), 6 positive text, 7 negative text, 3 KSampler (seed/steps/cfg/denoise), 9 SaveImage. img2img — 10 LoadImage (image), 11 VAEEncode, 6 text, 3 KSampler (denoise). video — Wan 2.1, needs ComfyUI-WanVideoWrapper custom nodes (10 UNETLoader, 13 WanTextEncode, 14 WanImageToVideo, 15 KSampler, 17 SaveVideo).',
       'Inspect available node types with comfyui_object_info before hand-writing a workflow.',
@@ -416,7 +452,8 @@ function runDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefinition {
       type: 'object',
       properties: {
         workflow: { type: 'object', description: 'ComfyUI API-format workflow: node id → { class_type, inputs }. Alternative to `template`.' },
-        template: { type: 'string', enum: ['txt2img', 'img2img', 'video'], description: 'Built-in workflow template id. Alternative to `workflow`.' },
+        template: { type: 'string', enum: TEMPLATES.map((t) => t.id), description: 'Built-in workflow template id. Alternative to `workflow`.' },
+        parameters: { type: 'object', description: 'Named parameter values for templates that declare them (h3_t2v: prompt, width, height, seconds, seed, steps).' },
         inputs: { type: 'object', description: 'Per-node input overrides keyed by node id, e.g. {"3": {"seed": 42, "steps": 30}, "6": {"text": "prompt"}}.' },
         mode: { type: 'string', enum: ['sync', 'async'], default: 'sync', description: 'sync waits and returns media; async returns a background job id.' },
         timeout_ms: { type: 'number', minimum: 5_000, maximum: 3_600_000, description: 'Generation wait budget in ms (default 180000). Video needs minutes.' },
@@ -448,9 +485,17 @@ function runDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefinition {
       const mode = args.mode === undefined ? 'sync' : args.mode
       if (mode !== 'sync' && mode !== 'async') throw new Error(`comfyui_run: mode must be sync or async, got ${String(mode)}`)
       const config = runtime.getConfig()
-      const { workflow, label } = buildWorkflow(args)
+      const built = buildWorkflow(args)
       const waitMs = typeof args.timeout_ms === 'number' ? args.timeout_ms : config.timeoutMs
-      return launch(runtime, ctx, exec, { workflow, label, workflowName: label, source: 'tool', mode, waitMs })
+      return launch(runtime, ctx, exec, {
+        workflow: built.workflow,
+        label: built.label,
+        workflowName: built.label,
+        source: built.template !== undefined ? `template:${built.template}` : 'tool',
+        ...(built.parameters !== undefined ? { parameters: built.parameters, values: built.values ?? {} } : {}),
+        mode,
+        waitMs,
+      })
     },
   }
 }
