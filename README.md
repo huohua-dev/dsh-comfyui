@@ -16,14 +16,26 @@
   <img src="https://img.shields.io/npm/l/dsh-comfyui" alt="license" />
 </p>
 
-> **版本配对（选对 dsh 版本再装，否则 dshmarket 会报风险提示）**：
+> **本仓库是 [fandc520/dsh-comfyui](https://github.com/fandc520/dsh-comfyui) 0.5.4 的 fork（huohua-dev），0.6.0 起只适配 DeepSeek Harness 0.2.0-rc.2。**
 >
-> | dsh-comfyui | 配对的 DeepSeek Harness | 说明 |
-> | --- | --- | --- |
-> | **0.5.x（最新，`latest` tag）** | **≥ 0.1.2**（含 0.1.5 / 0.1.6 / 0.1.7 预发布版） | 0.5.3 起兼容 dsh 0.1.7 的设置机制（设置页保存直接生效，无需重启） |
-> | **0.3.x（beta 线，`beta` tag）** | **0.1.1** | 老版本 dsh 请留在 0.3.x 线 |
+> | dsh-comfyui | 配对的 DeepSeek Harness |
+> | --- | --- |
+> | **0.6.x（本 fork，`dist` 分支）** | **0.2.0-rc.2**（peer 依赖写死该版本，无需 allow-version 豁免） |
+> | 0.5.x（上游 npm） | 0.1.2 – 0.1.7 |
 >
-> 安装：`dsh plugin --profile web add dsh-comfyui`（装最新 0.5.x）/ `dsh plugin --profile web add dsh-comfyui@beta`（老宿主装 0.3.x）。
+> 安装（desktop profile，装完需重启 DSH）：
+> `"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add github:huohua-dev/dsh-comfyui#dist`
+
+### 0.6.0 相对上游 0.5.4 的变化
+
+- **在对话里做视频**：内置 `h3_t2v` 模板（MiniMax H3 文生视频，10Eros TURBO），按名字传 `prompt / width / height / seconds / seed / steps`，时长按秒换算帧数（3 秒 = 73 帧，5 秒 = 124 帧）。
+- **对话里管理工作流**：`comfyui_workflow` 新增 `save`（从某次运行 `prompt_id` / 内置模板 / API JSON 保存）、`update`、`delete`。
+- **成片自动存到本机**：每次运行在 `archiveDir/<prompt_id>/` 下保存视频与 `meta.json`（完整工作流、seed、参数、sha256）；对话卡片优先播放本地文件，ComfyUI 关掉后历史视频照样能播、能拖进度条。
+- **后台任务适配 0.2**：任务归属当前会话，DSH 后台任务面板显示「排队中 / 采样 x/8」进度；`job_kill` 立即结束。
+- **只取消自己的任务**：排队中的只从队列删除，运行中的只中断它自己（v0.39 `/api/jobs/{id}/cancel`），插件里不再有全局 interrupt。
+- **路由保护**：所有 `/comfyui/*` 路由要求回环 Host、拒绝跨站请求、Origin 必须同源，并校验 DSH 登录会话；媒体路由只读插件自己归档的文件和合法的 ComfyUI `/view` 引用（防路径穿越）。**因此不再支持从局域网其它设备访问插件路由。**
+- **连不上 ComfyUI 时**报错写明原因与可配置的提示（默认「win 可能在 LLM 模式，需要先运行 winmode.sh video」）。
+- 设置项带说明，出现在 DSH「插件」页里本插件的设置中。
 
 ## 功能
 
@@ -31,9 +43,9 @@
 
 Agent 直接驱动 ComfyUI，无需手动操作画布：
 
-- `comfyui_run` —— 提交 API 格式工作流或内置模板（txt2img / img2img / video），返回生成媒体；`mode: "sync"` 等待结果，`mode: "async"` 后台任务（视频生成强烈建议）。
+- `comfyui_run` —— 提交 API 格式工作流或内置模板（txt2img / img2img / video(Wan 2.1) / **h3_t2v**），返回生成媒体；`mode: "sync"` 等待结果，`mode: "async"` 后台任务（视频一律用 async）。`h3_t2v` 用 `parameters` 按名字传参。
 - `comfyui_object_info` —— 列出服务器支持的节点定义，让 Agent 现场构造合法工作流。
-- `comfyui_workflow` —— 管理插件工作流库：`list`（含服务器地址、本机 ComfyUI 目录、加载区素材、每个工作流的参数清单）、`run`（按 id 运行 + 参数覆盖）、`skill`（按需读取某工作流的技能包）、`refresh`（重算参数快照）。
+- `comfyui_workflow` —— 管理插件工作流库：`list`（含服务器地址、本机 ComfyUI 目录、加载区素材、每个工作流的参数清单）、`run`（按 id 运行 + 参数覆盖）、**`save` / `update` / `delete`**（在对话里保存、修改、删除工作流）、`skill`（按需读取某工作流的技能包）、`refresh`（重算参数快照）。
 - `comfyui_skill` —— 读写工作流技能包（`list` / `read` / `write` / `append` / `mkdir` / `rename` / `delete` / `enable` / `require`），Agent 可把踩坑经验写回技能包，跨会话复用。
 
 ### UI 面板
@@ -70,9 +82,11 @@ Agent 直接驱动 ComfyUI，无需手动操作画布：
 - **Agent 也能写**：`comfyui_skill` 工具让 Agent 查看/编写技能包——踩到坑就 `append` 进 SKILL.md，下次（换个会话也一样）直接复用经验。
 - **运行前必读**：可勾选「运行前必读」，勾上后 Agent 本会话没读过该技能包就调 `run` 会被拒绝并提示先读。
 
-### 媒体代理与设置
+### 本地归档、媒体代理与设置
 
-生成文件经同源路由（`/comfyui/media`）按文件名转发，不依赖 ComfyUI 内存态历史——重启或清空历史后旧结果照样能打开。浏览器不直接接触 ComfyUI：无 CORS、无混合内容、API Key 不下发。
+任务完成后，插件把媒体下载到本机 `archiveDir/<prompt_id>/`（默认 `<数据目录>/archive`），旁边的 `meta.json` 记录 prompt_id、提交给 ComfyUI 的完整工作流、参数定义与实际取值（含随机出的 seed）、每个 seed 输入和文件的 sha256。`meta.json` 在提交时就写下，DSH 中途重启也能补归档。
+
+对话卡片优先播放 `/comfyui/archive/<prompt_id>/<文件>`（本地文件，支持 Range 拖动），本地没有时才走同源代理 `/comfyui/media` 转发 ComfyUI `/view`；代理也会先查本地归档。浏览器不直接接触 ComfyUI：无 CORS、无混合内容、API Key 不下发。归档目录不设容量上限，面板「删除资产」不会删本地归档。
 
 DH 设置页新增 "ComfyUI" 分区：服务器地址、API Key 环境变量名、本机 ComfyUI 目录、媒体访问地址、测试连接、界面语言切换，改完即生效，无需改 `cordis.yml`。
 
@@ -94,7 +108,9 @@ dsh plugin --profile desktop add dsh-comfyui
 - "用 ComfyUI 画一张红猫的图"
 - "把这幅图转成赛博朋克风格"
 - "把加载区这张动漫图转成真人照片，分辨率跟原图一致"
-- "生成一段 5 秒的短视频：日落下的城市"
+- "生成一段 480p、3 秒的视频：黄昏海边，橘猫看浪花，有海浪声"（H3，后台生成，卡片里直接播放）
+- "把这个存成模板，叫海边橘猫" → "用海边橘猫模板，改成 5 秒再来一条"
+- "取消刚才那个任务"（只取消它自己）
 - "用我之前在 ComfyUI 里保存的 Krea-Afterlight 跑一下"（若该图还没提取，Agent 会转告你先去面板点**提取**）
 
 远程 ComfyUI 若位于需鉴权的代理之后，通过凭据存储或 `apiKeyEnv` 指定的环境变量（默认 `COMFYUI_API_KEY`）提供密钥，绝不发给浏览器。
@@ -110,13 +126,17 @@ dsh plugin --profile desktop add dsh-comfyui
 | `dataDir` | *（DSH 数据目录）* | 工作流库与资产索引存放位置 |
 | `comfyuiDirs` | `[]` | 本机 ComfyUI 安装目录列表（可多条），Agent 据此定位 models、自定义节点、TTS 音色库 |
 | `outputDir` | `''`（自动推断） | ComfyUI 输出目录（删除资产时定位文件用） |
-| `mediaHost` | `''`（自动检测） | 生成媒体的外网访问基址 |
+| `archiveDir` | `''`（默认 `dataDir/archive`） | 成片本地归档目录（绝对路径） |
+| `unreachableHint` | `win 可能在 LLM 模式，需要先运行 winmode.sh video` | 连不上 ComfyUI 时附在报错后的提示 |
+| `maxMediaBytes` | `536870912`（512MB） | 单个媒体文件上限（代理与归档共用） |
+| `mediaHost` | `''` | 0.6.0 起不再使用（媒体 URL 都是同源相对路径） |
 | `skillsDir` | `''`（默认 `dataDir/skills`） | 技能包根目录（绝对路径，可放同步盘 / 版本库） |
 
 ## 环境要求
 
 - DeepSeek Harness（`web` / `desktop` profile）
 - 一个运行中的 [ComfyUI](https://github.com/comfystack/ComfyUI) 服务器（默认 `http://127.0.0.1:8188`）
+- `h3_t2v` 模板需要 ComfyUI ≥ 0.39（核心节点 `MiniMaxH3ImageToVideo`）与以下模型：`10Eros_Max_h3_TURBO-hybrid_beta5_int8.safetensors`（diffusion_models）、`qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors`（text_encoders，type=minimax）、`minimax_h3_video_vae_int8_convrot.safetensors` 与 `minimax_h3_audio_vae_fp32.safetensors`（vae）
 - `video` 模板需要 [ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper) 与 Wan 2.1 模型
 
 ## License

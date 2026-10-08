@@ -2,6 +2,7 @@
 import { zstdDecompressSync } from 'node:zlib'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 
 const ZSTD_MAGIC = 0xFD2FB528
 
@@ -46,7 +47,8 @@ function scanFrames(buffer) {
   return { frames }
 }
 
-const root = 'C:/Users/fandc/.dsh/sessions'
+// Session logs of the current DSH home (DSH_HOME, else ~/.dsh).
+const root = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'sessions')
 const files = []
 function walk(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

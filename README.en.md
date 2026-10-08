@@ -16,14 +16,26 @@
   <img src="https://img.shields.io/npm/l/dsh-comfyui" alt="license" />
 </p>
 
-> **Version pairing (pick the right dsh before installing, otherwise dshmarket shows a risk banner)**:
+> **This repository is a fork (huohua-dev) of [fandc520/dsh-comfyui](https://github.com/fandc520/dsh-comfyui) 0.5.4; from 0.6.0 it targets DeepSeek Harness 0.2.0-rc.2 only.**
 >
-> | dsh-comfyui | Paired DeepSeek Harness | Notes |
-> | --- | --- | --- |
-> | **0.5.x (latest, `latest` tag)** | **>= 0.1.2** (incl. 0.1.5 / 0.1.6 / 0.1.7 prereleases) | From 0.5.3 the settings page works with dsh 0.1.7's settings model (saves apply live, no restart) |
-> | **0.3.x (beta line, `beta` tag)** | **0.1.1** | On older dsh versions stay on the 0.3.x line |
+> | dsh-comfyui | Paired DeepSeek Harness |
+> | --- | --- |
+> | **0.6.x (this fork, `dist` branch)** | **0.2.0-rc.2** (peer pinned; no allow-version exemption needed) |
+> | 0.5.x (upstream npm) | 0.1.2 – 0.1.7 |
 >
-> Install: `dsh plugin --profile web add dsh-comfyui` (latest 0.5.x) / `dsh plugin --profile web add dsh-comfyui@beta` (0.3.x for older hosts).
+> Install (desktop profile, restart DSH afterwards):
+> `"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add github:huohua-dev/dsh-comfyui#dist`
+
+### What 0.6.0 changes over upstream 0.5.4
+
+- **Video from chat**: built-in `h3_t2v` template (MiniMax H3 text-to-video, 10Eros TURBO) driven by named `prompt / width / height / seconds / seed / steps`; seconds become frames (3 s = 73, 5 s = 124).
+- **Manage workflows from chat**: `comfyui_workflow` gains `save` (from a run's `prompt_id`, a built-in template, or API JSON), `update` and `delete`.
+- **Results land on this machine**: each run keeps its media plus `meta.json` (full workflow, seeds, parameters, sha256) under `archiveDir/<prompt_id>/`; chat cards play the local copy first, so history keeps playing (and seeking) with ComfyUI offline.
+- **0.2 background jobs**: owned by the session, live "queued / sampling x/8" progress in the DSH jobs panel, `job_kill` settles immediately.
+- **Cancel only your own prompt**: pending → dequeued, running → interrupted by id (v0.39 `/api/jobs/{id}/cancel`); no global interrupt anywhere.
+- **Route protection**: every `/comfyui/*` route requires a loopback Host, refuses cross-site requests and foreign Origins, and checks the DSH browser session; media routes only read the plugin's own archive and validated ComfyUI `/view` references. **Plugin routes are therefore no longer reachable from other LAN devices.**
+- **Unreachable ComfyUI** errors name the server and a configurable hint.
+- Settings carry descriptions and appear on this plugin's entry in the DSH Plugins page.
 
 ## Features
 
@@ -31,9 +43,9 @@
 
 The agent drives ComfyUI directly, no canvas work needed:
 
-- `comfyui_run` — submit an API-format workflow or a built-in template (`txt2img` / `img2img` / `video`) and get media back; `mode: "sync"` waits for the result, `mode: "async"` runs a background job (recommended for video).
+- `comfyui_run` — submit an API-format workflow or a built-in template (`txt2img` / `img2img` / `video` (Wan 2.1) / **`h3_t2v`**) and get media back; `mode: "sync"` waits for the result, `mode: "async"` runs a background job (always for video). `h3_t2v` takes named `parameters`.
 - `comfyui_object_info` — list the node definitions your ComfyUI server supports, so the agent can build valid workflows on the fly.
-- `comfyui_workflow` — manage the plugin's runnable-workflow library: `list` (server address, local ComfyUI dirs, load-area media, per-workflow parameter lists), `run` (by id + parameter overrides), `skill` (on-demand read of a workflow's skill pack), `refresh` (re-derive a parameter snapshot).
+- `comfyui_workflow` — manage the plugin's runnable-workflow library: `list` (server address, local ComfyUI dirs, load-area media, per-workflow parameter lists), `run` (by id + parameter overrides), **`save` / `update` / `delete`** (keep, change and remove workflows from chat), `skill` (on-demand read of a workflow's skill pack), `refresh` (re-derive a parameter snapshot).
 - `comfyui_skill` — read and write workflow skill packs (`list` / `read` / `write` / `append` / `mkdir` / `rename` / `delete` / `enable` / `require`); the agent can write its lessons back into a pack and reuse them across sessions.
 
 ### UI panel
@@ -70,9 +82,11 @@ A parameter list tells the agent which knobs exist, not what the workflow is *fo
 - **The agent can write it too**: the `comfyui_skill` tool lets the agent read and author a pack — `append` a pitfall to SKILL.md and the next session (even another one) reuses that experience.
 - **Read-before-run**: a "required" flag makes `run` refuse until the skill pack has been read in this session, with an error pointing to `action: skill`.
 
-### Media proxy & settings
+### Local archive, media proxy & settings
 
-Generated files are served through a same-origin route (`/comfyui/media`) addressed by file name, independent of ComfyUI's in-memory history — old results keep opening after a restart or a history clear. The browser never touches ComfyUI directly: no CORS, no mixed content, and the API key never leaves the host.
+When a run finishes, its media is downloaded to `archiveDir/<prompt_id>/` (default `<dataDir>/archive`) next to a `meta.json` with the prompt id, the full workflow submitted to ComfyUI, parameter definitions and the values actually used (randomized seeds included), every seed input, and each file's sha256. `meta.json` is written at submit time, so a DSH restart mid-run can still archive later.
+
+Chat cards play `/comfyui/archive/<prompt_id>/<file>` (local, Range-seekable) first and fall back to the same-origin proxy `/comfyui/media` (ComfyUI `/view`), which also checks the archive first. The browser never touches ComfyUI directly: no CORS, no mixed content, and the API key never leaves the host. The archive has no size cap, and deleting an asset in the panel does not touch it.
 
 The DH settings page gets a "ComfyUI" section: server address, API key env var name, local ComfyUI directories, media host, connection test and a zh/en UI language switch — applied immediately, no `cordis.yml` edits needed.
 
@@ -94,7 +108,9 @@ Just tell the agent, e.g.:
 - "Draw a red cat with ComfyUI"
 - "Turn this image into cyberpunk style"
 - "Turn the anime image in the load area into a photorealistic portrait, same resolution"
-- "Generate a 5-second clip: city at sunset"
+- "Make a 480p 3-second video: a ginger cat watching waves at dusk, with surf sounds" (H3, background job, plays in the card)
+- "Save this as a template called beach cat" → "Run beach cat again, but 5 seconds"
+- "Cancel that job" (only that prompt is cancelled)
 - "Run my Krea-Afterlight saved in ComfyUI" (if the graph isn't extracted yet, the agent will ask you to **extract** it in the panel first)
 
 For a remote ComfyUI behind an authenticated proxy, provide the key via credential storage or the `apiKeyEnv` env var (default `COMFYUI_API_KEY`) — it is resolved on the host and never sent to the browser.
@@ -110,13 +126,17 @@ For a remote ComfyUI behind an authenticated proxy, provide the key via credenti
 | `dataDir` | *(DSH data dir)* | Where the workflow library and asset index live |
 | `comfyuiDirs` | `[]` | Local ComfyUI install dirs (multiple allowed); the agent locates models, custom nodes, TTS voice libraries through these |
 | `outputDir` | `''` (inferred) | ComfyUI output dir (used to locate files when deleting assets) |
-| `mediaHost` | `''` (auto) | External base URL for generated media |
+| `archiveDir` | `''` (default `dataDir/archive`) | Local archive of finished runs (absolute path) |
+| `unreachableHint` | `win 可能在 LLM 模式，需要先运行 winmode.sh video` | Appended to "cannot reach ComfyUI" errors |
+| `maxMediaBytes` | `536870912` (512 MB) | Per-file cap for the proxy and the archive |
+| `mediaHost` | `''` | Unused since 0.6.0 (media URLs are same-origin relative paths) |
 | `skillsDir` | `''` (default `dataDir/skills`) | Skill pack root (absolute path; a synced folder or VCS works) |
 
 ## Requirements
 
 - DeepSeek Harness (`web` / `desktop` profile)
 - A running [ComfyUI](https://github.com/comfystack/ComfyUI) server (default `http://127.0.0.1:8188`)
+- The `h3_t2v` template needs ComfyUI ≥ 0.39 (core node `MiniMaxH3ImageToVideo`) with `10Eros_Max_h3_TURBO-hybrid_beta5_int8.safetensors` (diffusion_models), `qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors` (text_encoders, type minimax), `minimax_h3_video_vae_int8_convrot.safetensors` and `minimax_h3_audio_vae_fp32.safetensors` (vae)
 - The `video` template needs [ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper) and Wan 2.1 models
 
 ## License

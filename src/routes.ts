@@ -226,10 +226,9 @@ export function mountComfyUIRoutes(ctx: Context, runtime: ComfyUIRuntime, guard:
 
   const disposers: Array<() => void> = []
 
-  // Browser self-report: the index.html tap injects a one-line fetch that
-  // fires on every page load, so the host hint learns the origin the browser
-  // is actually using (e.g. http://100.97.190.89:3080) before any generation
-  // — without relying on the panel being opened or media being loaded.
+  // Browser self-report: records the origin the browser uses (host hint).
+  // Since 0.6.0 media URLs are relative and the index.html tap that called
+  // this on every page load is gone; the route stays for older pages.
   disposers.push(webServer.register({
     kind: 'exact',
     path: '/comfyui/ping',

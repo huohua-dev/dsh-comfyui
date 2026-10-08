@@ -37,7 +37,6 @@ export function ComfyUISettings({ t }: ComfyUISettingsProps): ReturnType<typeof 
   const [config, setConfig] = useState<ConfigView | null>(null)
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKeyEnv, setApiKeyEnv] = useState('')
-  const [mediaHost, setMediaHost] = useState('')
   const [comfyuiDirs, setComfyuiDirs] = useState<string[]>([])
   const [skillsDir, setSkillsDir] = useState('')
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -54,7 +53,6 @@ export function ComfyUISettings({ t }: ComfyUISettingsProps): ReturnType<typeof 
       setConfig(view)
       setBaseUrl(view.baseUrl)
       setApiKeyEnv(view.apiKeyEnv)
-      setMediaHost(view.mediaHost ?? '')
       setComfyuiDirs(Array.isArray(view.comfyuiDirs) ? view.comfyuiDirs : [])
       setSkillsDir(view.skillsDir ?? '')
     }).catch((error: unknown) => {
@@ -72,12 +70,11 @@ export function ComfyUISettings({ t }: ComfyUISettingsProps): ReturnType<typeof 
     try {
       // Trim blanks and drop empty rows before persisting.
       const dirs = comfyuiDirs.map((dir) => dir.trim()).filter((dir) => dir !== '')
-      const payload = (await postJson('/comfyui/config', { patch: { baseUrl, apiKeyEnv, mediaHost, comfyuiDirs: dirs, skillsDir: skillsDir.trim() } })) as { config?: ConfigView }
+      const payload = (await postJson('/comfyui/config', { patch: { baseUrl, apiKeyEnv, comfyuiDirs: dirs, skillsDir: skillsDir.trim() } })) as { config?: ConfigView }
       if (payload.config !== undefined) {
         setConfig(payload.config)
         setBaseUrl(payload.config.baseUrl)
         setApiKeyEnv(payload.config.apiKeyEnv)
-        setMediaHost(payload.config.mediaHost ?? '')
         setComfyuiDirs(payload.config.comfyuiDirs ?? [])
         setSkillsDir(payload.config.skillsDir ?? '')
       }
@@ -152,15 +149,6 @@ export function ComfyUISettings({ t }: ComfyUISettingsProps): ReturnType<typeof 
         onChange: (event: { target: { value: string } }) => { setApiKeyEnv(event.target.value); setSaveState('idle') },
       }),
       h('div', { className: 'dsc-hint' }, `${t('apiKeyEnvHint')} — ${config.hasApiKey ? t('hasApiKey') : t('noApiKey')}`),
-    ),
-    h('div', { className: 'dsc-field' },
-      h('label', null, t('mediaHost')),
-      h('input', {
-        value: mediaHost,
-        placeholder: 'http://192.168.1.5:3080',
-        onChange: (event: { target: { value: string } }) => { setMediaHost(event.target.value); setSaveState('idle') },
-      }),
-      h('div', { className: 'dsc-hint' }, t('mediaHostHint')),
     ),
     h('div', { className: 'dsc-field' },
       h('label', null, t('comfyuiDirs')),

@@ -8,9 +8,9 @@ export const COMFYUI_SKILL = {
   name: 'dsh-comfyui-workflows',
   source: 'runtime',
   description:
-    'ComfyUI 工作流管理：区分“图工作流”（ComfyUI 端保存的画布，衍生主题）与“API 工作流”（可执行，运行主题），分析画布中的多个独立流程（连通分量），以及图→API 提取的规则与面板操作引导。也包含本机环境（用户 ComfyUI 目录）与 TTS-Audio-Suite 音色库的快速查询/快照刷新方案。处理 comfyui_workflow、需要定位用户 ComfyUI 文件/音色库，或用户要求运行 ComfyUI 端保存的工作流时加载。',
+    'ComfyUI 生成与工作流管理：在对话里用 MiniMax H3 文生视频（h3_t2v 模板、按秒设时长、异步后台任务、成片自动存本机、存成模板/更新/删除）；区分“图工作流”（ComfyUI 端保存的画布，衍生主题）与“API 工作流”（可执行，运行主题），分析画布中的多个独立流程（连通分量），以及图→API 提取的规则与面板操作引导。也包含本机环境（用户 ComfyUI 目录）与 TTS-Audio-Suite 音色库的快速查询/快照刷新方案。处理 comfyui_workflow、需要定位用户 ComfyUI 文件/音色库，或用户要求运行 ComfyUI 端保存的工作流时加载。',
   whenToUse:
-    '用户要求运行/管理 ComfyUI 中保存的工作流，或 comfyui_workflow list 显示未提取的图工作流时；需要判断一个画布是否包含多个独立流程、或解释为何某个工作流无法直接运行时；需要查询 TTS-Audio-Suite 音色库、刷新已存工作流的音色参数快照、或定位用户本机 ComfyUI 目录时；或 comfyui_workflow list 里某个工作流带“技能包”标记、需要在运行前读取它时。',
+    '用户要求生成视频/图片、把一次运行存成模板、修改或删除已存工作流、取消生成任务时；用户要求运行/管理 ComfyUI 中保存的工作流，或 comfyui_workflow list 显示未提取的图工作流时；需要判断一个画布是否包含多个独立流程、或解释为何某个工作流无法直接运行时；需要查询 TTS-Audio-Suite 音色库、刷新已存工作流的音色参数快照、或定位用户本机 ComfyUI 目录时；或 comfyui_workflow list 里某个工作流带“技能包”标记、需要在运行前读取它时。',
   content: `# dsh-comfyui 工作流管理
 
 本插件把 ComfyUI 工作流分成两个主题：
@@ -19,6 +19,23 @@ export const COMFYUI_SKILL = {
 - **API 工作流（运行主题）**：可执行的 API 格式 prompt，是"运行单元"。从图里**提取（extract）**出来，或用户直接粘贴导入。运行必须用 API 工作流。
 
 comfyui_workflow 的 \`action: list\` 会同时返回：插件库中的 API 工作流（\`workflows\`）和 ComfyUI 端保存的图工作流（\`comfyuiWorkflows\`，带 \`extracted\` 与 \`derived\` 派生列表）。
+
+## 对话里做视频（MiniMax H3，用户不开 ComfyUI 网页）
+
+用户只在对话里提需求，你负责组工作流、提交、取结果。规则：
+
+- **文生视频默认用内置模板 \`h3_t2v\`**：\`comfyui_run { template: "h3_t2v", parameters: { prompt, width, height, seconds, seed?, steps? }, mode: "async" }\`。
+  - 分辨率：宽高必须是 32 的倍数。"480p" = 864×480（横屏）/ 480×864（竖屏）；"720p/高清" 用 1344×768。不要用 854×480，会被拒绝。
+  - 时长按秒传 \`seconds\`，插件自动换算帧数（3 秒 = 73 帧，5 秒 = 124 帧），不要自己算 length。
+  - 提示词同时描述画面和声音（H3 会生成音轨）。seed 不传就随机，实际用的 seed 记在归档 meta.json 里。
+  - 不要额外加 LoRA：10Eros TURBO 已内置 Turbo，8 步即可。
+  - 参考耗时：864×480 3 秒约 50 秒，1344×768 5 秒约 2 分钟（首次加载模型更久）。
+- **视频一律 \`mode: "async"\`**，提交后不要阻塞等待；后台任务面板会显示"排队中 / 采样 x/8"，完成时系统通知你。对话里的工具卡片会自己显示进度并在完成后直接播放（可拖动进度条），**不用把链接贴给用户**。结果文字里有本机归档路径，用户问"存在哪"时照实说。
+- **成片自动存到本机**：每个任务一个目录 \`<archiveDir>/<prompt_id>/\`（默认插件数据目录下的 archive），里面是视频和 meta.json（prompt_id、完整工作流、seed、参数）。ComfyUI 关掉后，历史卡片仍从本机播放。
+- **存成模板**：用户说"把这个存成模板/保存这个工作流"时，用 \`comfyui_workflow { action: "save", prompt_id: <那次运行的 prompt id>, name, description }\`——会保留命名参数（含按秒的时长），那次用的值成为默认值，seed 保持随机。之后 \`comfyui_workflow { action: "run", id, parameters: { 只传要改的那一项 }, mode: "async" }\`。改默认值用 \`action: "update"\`，删除用 \`action: "delete"\`（技能包目录会保留）。
+- **取消**：用 \`job_kill\` 停掉对应后台任务。插件只取消这个任务自己的 prompt：在排队就从队列删掉，在跑就只中断它，**不会影响别的任务**。
+- **连不上 ComfyUI**：报错会写明"无法连接 ComfyUI…win 可能在 LLM 模式，需要先运行 winmode.sh video"。把这句话转告用户，**不要自己去切换模式或重试轰炸**。
+- 需要自己写工作流时：先 \`comfyui_object_info { filter }\` 查节点，再用 \`comfyui_run { workflow, mode: "async" }\` 提交；跑通后用 save 存进库。SaveVideo 的 format/codec 在 API 里是扁平键：\`"format": "auto", "format.codec": "auto"\`。
 
 ## 本机环境（先看这里，不要反复问用户）
 

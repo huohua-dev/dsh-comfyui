@@ -15,7 +15,7 @@ import type { IncomingMessage } from 'node:http'
 import { networkInterfaces } from 'node:os'
 
 /**
- * The server's own first reachable LAN origin (e.g. http://192.168.1.5:3080),
+ * The server's own first reachable LAN origin (e.g. http://192.0.2.10:3080),
  * used as the media-URL fallback before loopback. Picks the first non-internal
  * IPv4 that is not loopback or link-local. Returns undefined when no such
  * address exists (no network interface), in which case callers keep loopback.
