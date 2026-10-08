@@ -1562,7 +1562,13 @@ export function mountComfyUIRoutes(ctx: Context, runtime: ComfyUIRuntime, guard:
             await client.clearQueue()
             break
           case 'interrupt':
-            await client.interruptPrompt(typeof body.promptId === 'string' ? body.promptId : undefined)
+            // A global interrupt would stop whoever's prompt is running; require
+            // the id and cancel exactly that prompt.
+            if (typeof body.promptId !== 'string' || body.promptId === '') {
+              sendJson(response, 400, { error: 'promptId is required for interrupt' })
+              return
+            }
+            await client.cancelOwn(body.promptId)
             break
           case 'cancel':
             if (typeof body.jobId !== 'string') {

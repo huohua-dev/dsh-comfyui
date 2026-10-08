@@ -358,13 +358,50 @@ export class ComfyUIClient {
     })
   }
 
-  /** Interrupt the running prompt; without an id, interrupt globally. */
-  async interruptPrompt(promptId?: string): Promise<void> {
+  /**
+   * Interrupt one prompt if it is the one running. Never called without an id:
+   * an id-less /interrupt stops whatever is running, i.e. someone else's job.
+   * v0.39 checks the id against the running prompt first, but the check and
+   * the interrupt are not atomic — prefer cancelOwn(), which uses the atomic
+   * /api/jobs/{id}/cancel when the server has it.
+   */
+  async interruptPrompt(promptId: string): Promise<void> {
+    if (promptId === '') throw new ComfyUIError('interruptPrompt needs a prompt id')
     await this.request('/interrupt', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(promptId !== undefined ? { prompt_id: promptId } : {}),
+      body: JSON.stringify({ prompt_id: promptId }),
     })
+  }
+
+  /**
+   * Cancel exactly one prompt and nothing else.
+   *
+   * ComfyUI ≥ 0.39 has POST /api/jobs/{id}/cancel: a running job is stopped
+   * through `interrupt_if_running(id)` (atomic — it cannot hit a prompt that
+   * started in between) and a pending one is dequeued. Older servers (404 /
+   * 405) get the classic pair: dequeue when still pending (`/queue
+   * {delete:[id]}`), targeted `/interrupt {prompt_id}` when running. Finished
+   * or unknown ids are a no-op either way.
+   */
+  async cancelOwn(promptId: string): Promise<{ cancelled: boolean; via: 'jobs-api' | 'dequeue' | 'interrupt' | 'none' }> {
+    if (promptId === '') throw new ComfyUIError('cancelOwn needs a prompt id')
+    try {
+      const result = await this.cancelJob(promptId)
+      return { cancelled: result?.cancelled === true, via: 'jobs-api' }
+    } catch (error) {
+      if (!(error instanceof ComfyUIError) || (error.status !== 404 && error.status !== 405)) throw error
+    }
+    const queue = await this.getQueue()
+    if (queue.queue_pending.some((item) => item.prompt_id === promptId)) {
+      await this.deleteQueueItems([promptId])
+      return { cancelled: true, via: 'dequeue' }
+    }
+    if (queue.queue_running.some((item) => item.prompt_id === promptId)) {
+      await this.interruptPrompt(promptId)
+      return { cancelled: true, via: 'interrupt' }
+    }
+    return { cancelled: false, via: 'none' }
   }
 
   /** Cancel one job regardless of state (running → interrupt, pending → dequeue). */
@@ -459,11 +496,6 @@ export class ComfyUIClient {
     return this.request<{ system?: { comfyui_version?: string } }>('/system_stats')
   }
 
-  /** Ask ComfyUI to interrupt the running prompt. */
-  async interrupt(): Promise<void> {
-    await this.request<unknown>('/interrupt', { method: 'POST' })
-  }
-
   /** Download one generated media file through GET /view. */
   async fetchView(ref: ComfyUIMediaRef): Promise<{ bytes: Uint8Array; contentType: string }> {
     const params = new URLSearchParams({ filename: ref.filename, subfolder: ref.subfolder, type: ref.type })
@@ -525,7 +557,8 @@ export class ComfyUIClient {
 
   /**
    * Poll history until the prompt completes, fails, or the budget/signal ends.
-   * Interrupts the server when the signal aborts before throwing.
+   * When the signal aborts, cancels this prompt (never a global interrupt)
+   * before throwing.
    */
   async waitForCompletion(opts: {
     promptId: string
@@ -534,12 +567,16 @@ export class ComfyUIClient {
     signal: AbortSignal
     /** Called once per poll round while the prompt is not finished (progress reporting). */
     onPoll?: () => Promise<void> | void
+    /** Cancel this prompt on the server when the signal aborts (default true);
+     * background jobs cancel through their own hook and pass false. */
+    cancelOnAbort?: boolean
   }): Promise<ComfyUIHistoryEntry> {
     const { promptId, timeoutMs, pollIntervalMs, signal } = opts
     const deadline = Date.now() + timeoutMs
     for (;;) {
       if (signal.aborted) {
-        await this.interrupt().catch(() => undefined)
+        // Only this prompt: dequeue it if still waiting, stop it if running.
+        if (opts.cancelOnAbort !== false) await this.cancelOwn(promptId).catch(() => undefined)
         throw new ComfyUIError(`ComfyUI generation interrupted (prompt ${promptId})`)
       }
       const entry = await this.getHistory(promptId)
@@ -562,7 +599,13 @@ export class ComfyUIClient {
           // Progress is best-effort; a failed probe never fails the wait.
         }
       }
-      await sleep(pollIntervalMs, signal)
+      try {
+        await sleep(pollIntervalMs, signal)
+      } catch (error) {
+        // An abort while sleeping must cancel the prompt too (the loop head
+        // never runs again), otherwise the server keeps generating.
+        if (!signal.aborted) throw error
+      }
     }
   }
 }

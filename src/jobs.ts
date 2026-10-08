@@ -82,6 +82,10 @@ export function startGenerationJob(jobs: JobsService, opts: {
       const controller = new AbortController()
       let lastLine: string | undefined
       let cancelled = false
+      let markKilled: (outcome: JobOutcome) => void = () => {}
+      // Settles the job the moment it is killed, even if `work` is still
+      // inside a slow request: job_kill must not hang on the network.
+      const killed = new Promise<JobOutcome>((resolve) => { markKilled = resolve })
       const progress = (line: string): void => {
         if (cancelled || line === lastLine) return
         lastLine = line
@@ -91,7 +95,7 @@ export function startGenerationJob(jobs: JobsService, opts: {
           // A progress update racing settlement is dropped by the registry; never fail the job for it.
         }
       }
-      const done = (async (): Promise<JobOutcome> => {
+      const finished = (async (): Promise<JobOutcome> => {
         try {
           const result = await opts.work(controller.signal, progress)
           if (cancelled) return { status: 'killed' }
@@ -103,12 +107,13 @@ export function startGenerationJob(jobs: JobsService, opts: {
           return { status: 'failed', detail: message.slice(0, 300), result: message }
         }
       })()
+      const done = Promise.race([finished, killed])
       return {
         cancel: (reason?: string) => {
           if (cancelled) return
           cancelled = true
           controller.abort(new JobCancelledError(reason))
-          void opts.cancelRemote().catch(() => undefined)
+          void opts.cancelRemote().catch(() => undefined).finally(() => markKilled({ status: 'killed' }))
         },
         done,
       }

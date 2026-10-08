@@ -406,7 +406,7 @@ async function launch(
     values: spec.values,
   })
   const { promptId } = queued
-  const wait = async (signal: AbortSignal, onPoll?: () => Promise<void>): Promise<RunResult> => {
+  const wait = async (signal: AbortSignal, onPoll?: () => Promise<void>, cancelOnAbort = true): Promise<RunResult> => {
     const startedAt = Date.now()
     try {
       const entry = await client.waitForCompletion({
@@ -414,6 +414,7 @@ async function launch(
         timeoutMs: spec.waitMs,
         pollIntervalMs: config.pollIntervalMs,
         signal,
+        cancelOnAbort,
         ...(onPoll !== undefined ? { onPoll } : {}),
       })
       const { media, archiveError } = await runtime.complete(promptId, entry)
@@ -439,11 +440,12 @@ async function launch(
         const result = await wait(signal, async () => {
           const line = await progressLine(runtime, client, promptId, queued.prompt)
           if (line !== undefined) progress(line)
-        })
+        }, false)
         progress('完成')
         return renderRunResultText(result)
       },
-      cancelRemote: () => client.interrupt(),
+      // Only this prompt: dequeued if pending, interrupted if running.
+      cancelRemote: async () => { await client.cancelOwn(promptId) },
     })
     return { kind: 'background', jobId, promptId, label: spec.label }
   }
