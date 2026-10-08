@@ -9,8 +9,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { errorMessage, readJsonBody, readRawBody, sameOrigin, sendJson } from './http.js'
 import type { ComfyUIRuntime } from './tools.js'
 import { analyzeWorkflowParameters, comboChildInfo, inputOptions, numberSpecOf, refreshParameterMetadata, uploadKindOf, type Workflow } from './params.js'
-import { collectMedia, historyErrorMessage, mediaProxyUrl, type ComfyUIMediaRef } from './comfyui.js'
+import { historyErrorMessage, mediaProxyUrl, type ComfyUIMediaRef } from './comfyui.js'
 import type { AssetRecord } from './store.js'
+import { serveLocalFile } from './archive.js'
+import type { RouteGuard } from './route-guard.js'
+import { progressLine } from './tools.js'
 import { MAX_ASSET_BYTES, SKILL_MAIN, SKILL_PRESET_DIRS, joinFrontmatter, splitFrontmatter } from './skillpack.js'
 import { MAX_IMPORT_BYTES, analyzeImportPackage, applyImportPackage, buildExportPackage } from './transfer.js'
 import { unlink } from 'node:fs/promises'
@@ -43,7 +46,8 @@ function healAssetUrls(assets: AssetRecord[]): AssetRecord[] {
   return assets.map((asset) => ({
     ...asset,
     media: asset.media.map((item) => (
-      item.filename === '' ? item : { ...item, url: mediaProxyUrl(item) }
+      // Local archive URLs are already file-addressed and offline-safe.
+      item.filename === '' || item.url.startsWith('/comfyui/archive/') ? item : { ...item, url: mediaProxyUrl(item) }
     )),
   }))
 }
@@ -196,11 +200,18 @@ async function readSameOriginPost(request: IncomingMessage, response: ServerResp
  * Mount every dsh-comfyui route on the host web server.
  * @returns the disposer, or undefined when no web server is present.
  */
-export function mountComfyUIRoutes(ctx: Context, runtime: ComfyUIRuntime): (() => void) | undefined {
-  const webServer = ctx.get('webServer') as {
+export function mountComfyUIRoutes(ctx: Context, runtime: ComfyUIRuntime, guard: RouteGuard = (handler) => handler): (() => void) | undefined {
+  const host = ctx.get('webServer') as {
     register(route: { kind: string; path: string; handler(request: IncomingMessage, response: ServerResponse): void | Promise<void> }): () => void
   } | undefined
-  if (webServer === undefined) return undefined
+  if (host === undefined) return undefined
+  // Every route — reads included — goes through the browser-trust fence
+  // (route-guard.ts): loopback Host, no cross-site fetch, matching Origin,
+  // and the DSH session cookie when the host provides the Connection service.
+  const webServer = {
+    register: (route: { kind: string; path: string; handler(request: IncomingMessage, response: ServerResponse): void | Promise<void> }) =>
+      host.register({ ...route, handler: guard(route.handler) }),
+  }
 
   // Record the browser's request origin on every route so media URLs can use
   // the address the browser actually reached (loopback, LAN IP, or domain).
@@ -1449,6 +1460,17 @@ export function mountComfyUIRoutes(ctx: Context, runtime: ComfyUIRuntime): (() =
         sendJson(response, 400, { error: 'promptId is required' })
         return
       }
+      // The local archive answers first and needs no ComfyUI at all: this is
+      // what keeps history cards playing after the server goes offline.
+      const archived = await runtime.archive.readMeta(promptId)
+      if (archived !== undefined && archived.status === 'completed' && archived.files.length > 0) {
+        sendJson(response, 200, { ok: true, status: 'completed', source: 'archive', media: runtime.archive.itemsOf(archived, (ref) => mediaProxyUrl(ref, runtime.proxyBase())) })
+        return
+      }
+      if (archived !== undefined && (archived.status === 'failed' || archived.status === 'cancelled')) {
+        sendJson(response, 200, { ok: true, status: 'failed', error: archived.error ?? (archived.status === 'cancelled' ? '已取消' : 'failed') })
+        return
+      }
       try {
         const client = runtime.createClient(await runtime.getApiKey())
         const entry = await client.getHistory(promptId)
@@ -1458,7 +1480,8 @@ export function mountComfyUIRoutes(ctx: Context, runtime: ComfyUIRuntime): (() =
           // queue instead of timing it out as "gone".
           const queue = await client.getQueue()
           const waiting = [...queue.queue_running, ...queue.queue_pending].some((item) => item.prompt_id === promptId)
-          sendJson(response, 200, { ok: true, status: waiting ? 'queued' : 'unknown' })
+          const progress = waiting ? await progressLine(runtime, client, promptId, archived?.workflow) : undefined
+          sendJson(response, 200, { ok: true, status: waiting ? 'queued' : 'unknown', ...(progress !== undefined ? { progress } : {}) })
           return
         }
         const statusStr = entry.status?.status_str
@@ -1470,11 +1493,50 @@ export function mountComfyUIRoutes(ctx: Context, runtime: ComfyUIRuntime): (() =
           sendJson(response, 200, { ok: true, status: 'running' })
           return
         }
-        const config = runtime.getConfig()
-        const media = collectMedia({ promptId, entry, maxItems: config.maxMediaItems, proxyBase: runtime.proxyBase() })
-        sendJson(response, 200, { ok: true, status: 'completed', media })
+        // Completed: archive (idempotent, shared with the job that may be
+        // doing the same right now) and answer with the local copies.
+        const { media, archiveError } = await runtime.complete(promptId, entry)
+        sendJson(response, 200, { ok: true, status: 'completed', source: archiveError === undefined ? 'archive' : 'proxy', media, ...(archiveError !== undefined ? { archiveError } : {}) })
       } catch (error) {
         sendJson(response, 200, { ok: false, error: errorMessage(error) })
+      }
+    }),
+  }))
+
+  // Archived files: /comfyui/archive/<promptId>/<name>. Only names listed in
+  // that run's meta.json resolve (see RunArchive.resolveFile); Range/HEAD are
+  // served locally so <video> seeks without ComfyUI.
+  disposers.push(webServer.register({
+    kind: 'prefix',
+    path: '/comfyui/archive',
+    handler: withHint(async (request, response) => {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        sendJson(response, 405, { error: 'method not allowed' })
+        return
+      }
+      const pathname = new URL(request.url ?? '/', 'http://localhost').pathname
+      const parts = pathname.slice('/comfyui/archive/'.length).split('/')
+      if (parts.length !== 2) {
+        sendJson(response, 404, { error: 'not found' })
+        return
+      }
+      let name: string
+      try {
+        name = decodeURIComponent(parts[1] ?? '')
+      } catch {
+        sendJson(response, 400, { error: 'bad file name' })
+        return
+      }
+      const file = await runtime.archive.resolveFile(parts[0] ?? '', name)
+      if (file === undefined) {
+        sendJson(response, 404, { error: 'not found' })
+        return
+      }
+      try {
+        await serveLocalFile(request, response, { path: file.path, size: file.size })
+      } catch {
+        if (!response.headersSent) sendJson(response, 500, { error: 'read failed' })
+        else response.end()
       }
     }),
   }))

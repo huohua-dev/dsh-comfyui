@@ -18,6 +18,7 @@ import type { HostHint } from './host-hint.js'
 import { SKILL_MAIN, joinFrontmatter, type WorkflowSkillPacks } from './skillpack.js'
 import { ownerSessionOf, startGenerationJob, type JobsService } from './jobs.js'
 import { describeParameters, draftForSave, draftForUpdate, type RunRecord } from './library.js'
+import type { RunArchive } from './archive.js'
 
 /** A workflow saved on the ComfyUI server (userdata/workflows), with extract status. */
 export interface ComfyUIComfyWorkflow {
@@ -53,9 +54,15 @@ export interface ComfyUIRuntime {
     parameters?: WorkflowParameter[]
     values?: Record<string, unknown>
   }): Promise<QueuedPrompt>
-  /** Collect a finished prompt's media (archiving it locally first when an
-   * archive is configured) — the one completion path every run goes through. */
-  complete(promptId: string, entry: ComfyUIHistoryEntry): Promise<RunMediaItem[]>
+  /** Collect a finished prompt's media and download it into the local
+   * archive — the one completion path every run goes through. Archive
+   * failures do not fail the run: the items then keep their proxy URLs and
+   * `archiveError` says why. */
+  complete(promptId: string, entry: ComfyUIHistoryEntry): Promise<{ media: RunMediaItem[]; archiveError?: string }>
+  /** Record a run that ended without output (failed / cancelled) in its meta.json. */
+  markRun(promptId: string, status: 'failed' | 'cancelled', error?: string): Promise<void>
+  /** Local archive of finished runs (meta.json + media per prompt). */
+  archive: RunArchive
   /** Stop tracking a prompt (used when a tool call fails before completion). */
   untrack(promptId: string): void
   /** Every prompt this plugin queued and is still waiting on. */
@@ -187,6 +194,8 @@ export interface RunResult {
   elapsedMs: number
   media: RunMediaItem[]
   summary: string
+  /** Why the local archive copy is missing (the run itself succeeded). */
+  archiveError?: string
 }
 
 /** Background mode result: collect later with job_output. */
@@ -313,6 +322,7 @@ export function renderRunResultText(result: RunResult): string {
   for (const item of result.media) {
     lines.push(`  ${item.kind}: ${item.url}${item.localPath !== undefined ? `（已存到本机 ${item.localPath}）` : ''}`)
   }
+  if (result.archiveError !== undefined) lines.push(`注意：本地归档失败（${result.archiveError}），卡片暂时经 ComfyUI 代理播放。`)
   if (result.media.length > 0) lines.push('对话里的工具卡片会直接播放/显示这些文件，不需要再贴链接。')
   return lines.join('\n')
 }
@@ -406,10 +416,15 @@ async function launch(
         signal,
         ...(onPoll !== undefined ? { onPoll } : {}),
       })
-      const media = await runtime.complete(promptId, entry)
-      return { kind: 'sync', promptId, status: 'completed', elapsedMs: Date.now() - startedAt, media, summary: summarizeMedia(media) }
+      const { media, archiveError } = await runtime.complete(promptId, entry)
+      return {
+        kind: 'sync', promptId, status: 'completed', elapsedMs: Date.now() - startedAt, media, summary: summarizeMedia(media),
+        ...(archiveError !== undefined ? { archiveError } : {}),
+      }
     } catch (error) {
       runtime.untrack(promptId)
+      const message = error instanceof Error ? error.message : String(error)
+      await runtime.markRun(promptId, signal.aborted ? 'cancelled' : 'failed', message)
       throw error
     }
   }
@@ -482,6 +497,7 @@ function runDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefinition {
           elapsedMs: result.elapsedMs,
           media: result.media,
           summary: result.summary,
+          ...(result.archiveError !== undefined ? { archiveError: result.archiveError } : {}),
         }
       },
     },

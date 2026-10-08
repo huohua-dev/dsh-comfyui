@@ -9,7 +9,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-settings'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
-import { Config, resolveConfig, type Config as ConfigType } from './config.js'
+import { Config, archiveRootOf, resolveConfig, type Config as ConfigType } from './config.js'
+import { RunArchive } from './archive.js'
 import { ComfyUIClient, CLIENT_ID, collectMedia } from './comfyui.js'
 import { ComfyUIStore } from './store.js'
 import { QueueTracker } from './queue.js'
@@ -23,7 +24,8 @@ import { createWorkflowSkillPacks } from './skillpack.js'
 import { registerComfyUITools, type ComfyUIRuntime } from './tools.js'
 import { mountComfyUIRoutes } from './routes.js'
 import { mountComfyUIProxy } from './proxy.js'
-import { createHostHint, detectLanOrigin } from './host-hint.js'
+import { createHostHint } from './host-hint.js'
+import { createRouteGuard, type ConnectionAdmission } from './route-guard.js'
 
 export const name = 'dsh-comfyui'
 export { Config }
@@ -164,29 +166,22 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
   }) as never)
 
   const hostHint = createHostHint()
+  // Finished runs land on this machine; the root is re-read per call so a
+  // settings-page change applies to the next run (existing runs stay put).
+  const archive = new RunArchive(() => archiveRootOf(resolved))
 
   const runtime: ComfyUIRuntime = {
     getConfig: () => resolved,
     getApiKey: () => resolveApiKey(ctx, resolved.apiKeyEnv),
     createClient: (apiKey) => new ComfyUIClient(resolved.baseUrl, apiKey, resolved.connectTimeoutMs, resolved.maxMediaBytes),
     hostHint,
-    proxyBase: () => {
-      // Explicit external media host wins (LAN/domain/reverse-proxy config);
-      // otherwise use the origin browsers actually reached this server with;
-      // then the server's own LAN origin (reachable from remote browsers);
-      // finally fall back to loopback. The result is always an absolute
-      // http(s) URL, which the chat markdown renderer requires.
-      const explicit = (resolved.mediaHost ?? '').trim().replace(/\/+$/, '')
-      if (explicit !== '') return explicit
-      const hinted = hostHint.origin()
-      if (hinted !== undefined) return hinted
-      const ws = ctx.get('webServer') as { port?: number; host?: string } | undefined
-      if (ws === undefined || ws.port === undefined) return undefined
-      const lan = detectLanOrigin(ws.port)
-      if (lan !== undefined) return lan
-      const host = ws.host === '0.0.0.0' ? '127.0.0.1' : ws.host ?? '127.0.0.1'
-      return `http://${host}:${ws.port}`
-    },
+    archive,
+    // Media URLs are same-origin relative paths since 0.6.0: the card renders
+    // them inside the page that served it, and the media routes only answer
+    // loopback hosts anyway, so an absolute LAN/domain origin would be both
+    // unnecessary and refused. Relative URLs also survive a port change,
+    // which keeps old chat cards playable.
+    proxyBase: () => '',
     settingsWritable: () => {
       const settings = ctx.get('settings') as SettingsService | undefined
       return settings?.writable === true
@@ -221,9 +216,51 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
       }
       const promptId = await client.queuePrompt(prompt, { extraData })
       tracker.track({ promptId, ts: new Date().toISOString(), workflowName: meta.workflowName, source: meta.source })
+      // meta.json goes down before the run finishes, so the exact prompt,
+      // parameters and seeds survive even if DSH restarts mid-generation.
+      await archive.recordSubmission({
+        promptId,
+        workflowName: meta.workflowName,
+        ...(meta.workflowId !== undefined ? { workflowId: meta.workflowId } : {}),
+        source: meta.source,
+        baseUrl: resolved.baseUrl,
+        ...(meta.parameters !== undefined && meta.parameters.length > 0 ? { parameters: meta.parameters } : {}),
+        values,
+        workflow: prompt,
+      }).catch((error: unknown) => {
+        ctx.logger.warn(`dsh-comfyui: could not record run ${promptId} in the archive: ${String(error)}`)
+      })
       return { promptId, prompt, values }
     },
-    complete: async (promptId, entry) => collectMedia({ promptId, entry, maxItems: resolved.maxMediaItems, proxyBase: runtime.proxyBase() }),
+    complete: async (promptId, entry) => {
+      const items = collectMedia({ promptId, entry, maxItems: resolved.maxMediaItems, proxyBase: runtime.proxyBase() })
+      if (items.length === 0) return { media: items }
+      const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
+      try {
+        const prompt = Array.isArray(entry.prompt) ? (entry.prompt as unknown[])[2] : undefined
+        const meta = await archive.archive({
+          promptId,
+          items,
+          download: (ref) => client.fetchViewStreamed(ref),
+          maxBytes: resolved.maxMediaBytes,
+          fallback: {
+            workflowName: tracker.get(promptId)?.workflowName ?? null,
+            source: tracker.get(promptId)?.source ?? 'external',
+            baseUrl: resolved.baseUrl,
+            values: {},
+            workflow: (typeof prompt === 'object' && prompt !== null ? prompt : {}) as Workflow,
+          },
+        })
+        return { media: archive.localize(promptId, items, meta) }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        ctx.logger.warn(`dsh-comfyui: archiving ${promptId} failed: ${message}`)
+        return { media: archive.localize(promptId, items, undefined), archiveError: message }
+      }
+    },
+    markRun: async (promptId, status, error) => {
+      await archive.markStatus(promptId, status, error).catch(() => undefined)
+    },
     untrack: (promptId) => tracker.untrack(promptId),
     trackedRuns: () => tracker.list(),
     queueProgress: (promptId) => progress.get(promptId),
@@ -244,6 +281,15 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
     },
     deleteWorkflow: (id) => store.deleteWorkflow(id),
     runRecord: async (promptId) => {
+      const archived = await archive.readMeta(promptId)
+      if (archived !== undefined && Object.keys(archived.workflow).length > 0) {
+        return {
+          workflow: archived.workflow,
+          ...(archived.parameters !== undefined ? { parameters: archived.parameters } : {}),
+          values: archived.values,
+          workflowName: archived.workflowName,
+        }
+      }
       const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
       const entry = await client.getHistory(promptId).catch(() => undefined)
       const prompt = Array.isArray(entry?.prompt) ? (entry.prompt as unknown[])[2] : undefined
@@ -262,7 +308,7 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
     deleteAsset: (promptId) => store.deleteAsset(promptId),
     sweep: async () => {
       const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
-      return tracker.sweep({ client, store, maxItems: resolved.maxMediaItems, proxyBase: runtime.proxyBase() })
+      return tracker.sweep({ client, store, complete: async (promptId, entry) => (await runtime.complete(promptId, entry)).media })
     },
     listComfyWorkflows: async () => {
       const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
@@ -421,21 +467,18 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
   ctx.inject(['webServer'], (webCtx) => {
     webCtx.effect(() => {
       const disposers: Array<() => void> = []
-      const routesDisposer = mountComfyUIRoutes(webCtx, runtime)
+      // DSH's Connection service, when present, adds its browser-session
+      // cookie check on top of the loopback/origin fence.
+      const guard = createRouteGuard(() => {
+        const connection = webCtx.get('connection') as ConnectionAdmission | undefined
+        return connection !== undefined && typeof connection.admit === 'function' ? connection : undefined
+      })
+      const routesDisposer = mountComfyUIRoutes(webCtx, runtime, guard)
       if (routesDisposer !== undefined) disposers.push(routesDisposer)
-      const proxyDisposer = mountComfyUIProxy(webCtx, runtime)
+      const proxyDisposer = mountComfyUIProxy(webCtx, runtime, guard)
       if (proxyDisposer !== undefined) disposers.push(proxyDisposer)
-      // Inject a one-line self-report into the served index.html: on every
-      // page load the browser pings /comfyui/ping, which records the origin
-      // the browser actually uses, so generated media URLs match the user's
-      // address (LAN IP, domain, reverse proxy) without any configuration.
-      const webServer = webCtx.get('webServer') as { tapIndex(transform: (html: string) => string): () => void } | undefined
-      if (webServer !== undefined) {
-        disposers.push(webServer.tapIndex((html) => {
-          if (html.includes('dsh-comfyui-ping')) return html
-          return html.replace('</head>', '<script>/* dsh-comfyui-ping */try{fetch("/comfyui/ping",{cache:"no-store"})}catch(e){}</script></head>')
-        }))
-      }
+      // (0.6.0 dropped the index.html ping tap: media URLs are relative now,
+      // so the browser's origin no longer needs to be learned.)
       return () => {
         for (const dispose of disposers) dispose()
       }

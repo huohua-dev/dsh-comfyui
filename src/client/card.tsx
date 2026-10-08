@@ -7,6 +7,7 @@
  */
 import { createElement as h, useEffect, useState } from 'react'
 import { Lightbox } from './lightbox.js'
+import { mediaSources, sameOriginPath } from './media-url.ts'
 
 interface MediaItem {
   filename: string
@@ -16,6 +17,9 @@ interface MediaItem {
   index: number
   kind: 'image' | 'video' | 'audio' | 'other'
   url: string
+  /** ComfyUI /view proxy URL, used when the local archive copy fails to load. */
+  proxyUrl?: string
+  localPath?: string
 }
 
 interface SyncMeta {
@@ -95,16 +99,23 @@ function MediaItem({ item, t, onOpen }: {
   onOpen: () => void
 }): ReturnType<typeof h> {
   const [size, setSize] = useState<{ width: number; height: number } | null>(null)
-  const [failed, setFailed] = useState(false)
-  const media = item.kind === 'video'
-    ? h('video', { src: item.url, controls: true, preload: 'metadata' })
+  const sources = mediaSources(item)
+  const [attempt, setAttempt] = useState(0)
+  const failed = attempt >= sources.length
+  const src = sources[Math.min(attempt, sources.length - 1)] ?? item.url
+  const local = src.startsWith('/comfyui/archive/')
+  // Local copy first; on a load error fall back to the ComfyUI proxy, then give up.
+  const onError = (): void => setAttempt((value) => value + 1)
+  const media = failed && item.kind !== 'other'
+    ? h('span', { className: 'dsc-media-other' }, `${item.filename}（${t('cardLoadFailed')}）`)
+    : item.kind === 'video'
+    ? h('video', { key: src, src, controls: true, preload: 'metadata', playsInline: true, onError, className: 'dsc-media-video' })
     : item.kind === 'audio'
-      ? h('audio', { src: item.url, controls: true, preload: 'metadata' })
+      ? h('audio', { key: src, src, controls: true, preload: 'metadata', onError })
       : item.kind === 'image'
-        ? failed
-          ? h('span', { className: 'dsc-media-other' }, `${item.filename}（${t('cardLoadFailed')}）`)
-          : h('img', {
-              src: item.url,
+        ? h('img', {
+              key: src,
+              src,
               alt: item.filename,
               loading: 'lazy',
               className: 'dsc-media-img dsc-media-img--clickable',
@@ -116,7 +127,7 @@ function MediaItem({ item, t, onOpen }: {
                   setSize({ width, height })
                 }
               },
-              onError: () => setFailed(true),
+              onError,
             })
         : h('span', { className: 'dsc-media-other' }, item.filename)
   const ratio = size === null ? null : aspectLabel(size.width, size.height)
@@ -126,7 +137,8 @@ function MediaItem({ item, t, onOpen }: {
       size !== null
         ? h('span', { className: 'dsc-media-size' }, `${size.width}×${size.height}${ratio !== '' ? ` · ${ratio}` : ''}`)
         : null,
-      h('a', { href: item.url, download: item.filename, target: '_blank', rel: 'noreferrer' }, t('cardDownload')),
+      h('span', { className: 'dsc-media-size' }, local ? t('cardLocal') : t('cardProxy')),
+      h('a', { href: src, download: item.filename, target: '_blank', rel: 'noreferrer' }, t('cardDownload')),
     ),
   )
 }
@@ -138,7 +150,7 @@ function ResultCard({ title, result, t }: {
 }): ReturnType<typeof h> {
   const failed = result.status === 'interrupted'
   const [lightbox, setLightbox] = useState<number | null>(null)
-  const urls = result.media.map((item) => item.url)
+  const urls = result.media.map((item) => sameOriginPath(item.url))
   const kinds = result.media.map((item) => item.kind)
   return h('div', { className: 'dsc-card' },
     h('div', { className: 'dsc-card-head' },
@@ -183,6 +195,7 @@ function BackgroundCard({ label, promptId, t }: {
   // the plugin's asset index — which records every completed run's media with
   // healed proxy URLs — and settles instead of polling forever.
   const [result, setResult] = useState<{ status: string; media?: MediaItem[]; error?: string; recovered?: boolean } | null>(null)
+  const [progress, setProgress] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<number | null>(null)
 
   useEffect(() => {
@@ -208,8 +221,9 @@ function BackgroundCard({ label, promptId, t }: {
     const poll = async (): Promise<void> => {
       try {
         const response = await fetch(`/comfyui/jobs/media?promptId=${encodeURIComponent(promptId)}`, { headers: { accept: 'application/json' } })
-        const data = (await response.json()) as { ok?: boolean; status?: string; media?: MediaItem[]; error?: string }
+        const data = (await response.json()) as { ok?: boolean; status?: string; media?: MediaItem[]; error?: string; progress?: string }
         if (stopped) return
+        setProgress(typeof data.progress === 'string' ? data.progress : null)
         if (data.ok !== true || data.status === undefined) {
           throw new Error(data.error ?? 'invalid jobs/media response')
         }
@@ -259,7 +273,7 @@ function BackgroundCard({ label, promptId, t }: {
 
   if (result !== null && (result.status === 'completed' || result.status === 'failed')) {
     const media = result.media ?? []
-    const urls = media.map((item) => item.url)
+    const urls = media.map((item) => sameOriginPath(item.url))
     const kinds = media.map((item) => item.kind)
     return h('div', { className: 'dsc-card' },
       h('div', { className: 'dsc-card-head' },
@@ -291,7 +305,7 @@ function BackgroundCard({ label, promptId, t }: {
       h('span', { className: 'dsc-badge' }, t('cardBackground')),
       h('span', { className: 'dsc-meta' }, `${label} · ${promptId}`),
     ),
-    h('div', { className: 'dsc-meta' }, t('cardCollect')),
+    h('div', { className: 'dsc-meta' }, progress !== null ? `${t('cardProgress')}：${progress}` : t('cardCollect')),
   )
 }
 

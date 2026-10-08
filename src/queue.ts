@@ -4,7 +4,7 @@
  * completed runs into the asset index. Sweeps run on read (queue/assets
  * routes), so no background timers leak into the fiber lifecycle.
  */
-import { ComfyUIClient, collectMedia, hasMedia, type ComfyUIHistoryEntry } from './comfyui.js'
+import { ComfyUIClient, hasMedia, type ComfyUIHistoryEntry, type ComfyUIMediaItem } from './comfyui.js'
 import type { AssetRecord, ComfyUIStore, TrackedState } from './store.js'
 
 /** A prompt this plugin queued. Kept after completion so the task center
@@ -85,8 +85,8 @@ export class QueueTracker {
   async sweep(opts: {
     client: ComfyUIClient
     store: ComfyUIStore
-    maxItems: number
-    proxyBase: string | undefined
+    /** The runtime's completion path: collects the media and archives it locally. */
+    complete(promptId: string, entry: ComfyUIHistoryEntry): Promise<ComfyUIMediaItem[]>
   }): Promise<AssetRecord[]> {
     const completed: AssetRecord[] = []
     for (const run of [...this.runs.values()]) {
@@ -94,7 +94,7 @@ export class QueueTracker {
       const entry = await opts.client.getHistory(run.promptId).catch(() => undefined)
       if (entry === undefined) continue
       if (isCompleted(entry)) {
-        const media = collectMedia({ promptId: run.promptId, entry, maxItems: opts.maxItems, proxyBase: opts.proxyBase })
+        const media = await opts.complete(run.promptId, entry)
         const record: AssetRecord = {
           promptId: run.promptId,
           ts: run.ts,
