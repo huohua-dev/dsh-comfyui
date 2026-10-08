@@ -45,6 +45,44 @@ export interface WorkflowParameter {
     multipleOf?: number;
     /** The run is refused when no value is given and the default is empty. */
     required?: boolean;
+    /** Optional sub-graph: when the parameter's effective value is empty, these
+     * nodes are cut out of the prompt and their consumers re-wired (see
+     * `PruneSpec` and `pruneWorkflowNodes`). */
+    prune?: PruneSpec;
+    /** Extra inputs that receive the same (converted) value, e.g. the
+     * ImageScale nodes that must resize keyframes to the output width/height. */
+    mirrors?: Array<{
+        nodeId: string;
+        inputKey: string;
+    }>;
+    /** false: never filled from the panel's load area (an optional reference
+     * that should only be used when the caller names a file explicitly). */
+    loadArea?: false;
+    /** false: this image's recorded pixel size never becomes the default
+     * width/height (a character reference is not the output canvas). */
+    matchSize?: false;
+}
+/**
+ * How an optional parameter removes its sub-graph when left empty.
+ *
+ * Why this exists: an optional media input (a second reference image, a
+ * keyframe) is a *chain of nodes* — LoadImage → ImageScale → a guide node
+ * spliced into the conditioning chain — not a single input value. ComfyUI
+ * validates every node that feeds an output, so a LoadImage left with an
+ * empty file name fails the whole prompt. The `upload: 'media'` slot mechanism
+ * cannot help: it edits one JSON array inside a single input string. So an
+ * empty value here removes the nodes outright and closes the graph around the
+ * hole instead.
+ */
+export interface PruneSpec {
+    /** Node ids removed when the value is empty (ids missing from the workflow are ignored). */
+    nodes: string[];
+    /** Pass-through nodes (single-output filters inside a chain, e.g. a guide
+     * on the conditioning or a LoRA on the model): removed node id → the input
+     * key whose value replaces every reference to its output. Consumers of a
+     * removed node without a pass-through lose that input key instead — right
+     * for optional and autogrow inputs such as `ref_images.ref_image_1`. */
+    passthrough?: Record<string, string>;
 }
 type Workflow = Record<string, {
     class_type: string;
@@ -125,3 +163,30 @@ export declare function applyWorkflowParameters(workflow: Workflow, parameters: 
 /** Filled with the value each parameter actually took (explicit, default,
  * load-area or randomized) — the record a run's metadata keeps. */
 effective?: Record<string, unknown>): Workflow;
+/**
+ * Every `[nodeId, slot]` reference that points at a node missing from the
+ * workflow, as readable `node.input → id` strings. The same integrity rule
+ * convert.ts applies to an extracted graph; empty means the prompt is closed.
+ */
+export declare function danglingReferences(workflow: Workflow): string[];
+/**
+ * Remove nodes from a workflow copy and re-wire what consumed them.
+ *
+ * `removals` maps each removed node id to a pass-through input key (or
+ * undefined). A consumer input that referenced a removed node takes the
+ * removed node's pass-through value instead — followed transitively, so two
+ * stacked guides both closing collapse onto the original conditioning — or,
+ * without a pass-through, the consumer input key is deleted.
+ *
+ * Deleted autogrow keys leave a gap (`ref_image_0`, `ref_image_2`); the
+ * remaining keys of that group are renumbered contiguously from the group's
+ * first index. ComfyUI rebuilds an autogrow input from its template names in
+ * order and the prompt addresses them by position (`<Picture 2>` = second
+ * connected image), so a gap would either drop the later reference or shift
+ * its meaning.
+ *
+ * Throws when the result still references a missing node (a removed node
+ * without pass-through feeding a required input is a template bug that must
+ * not reach the server).
+ */
+export declare function pruneWorkflowNodes(workflow: Workflow, removals: Map<string, string | undefined>): Workflow;

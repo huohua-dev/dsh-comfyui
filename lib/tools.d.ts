@@ -3,7 +3,8 @@
  * registry. `comfyui_run` submits a workflow and returns media results
  * (synchronously or as a background job); `comfyui_object_info` exposes the
  * server's node definitions; `comfyui_workflow` lists and runs saved
- * workflows from the panel-managed workflow library.
+ * workflows from the panel-managed workflow library; `comfyui_upload` puts a
+ * local media file into ComfyUI's input directory.
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { Config } from './config.js';
@@ -110,6 +111,17 @@ export interface ComfyUIRuntime {
      * when the server has no such endpoint). Call before re-deriving parameter
      * snapshots so object_info reports newly added voices. */
     refreshVoiceLibrary(): Promise<boolean>;
+    /** Put one file into ComfyUI's input directory (multipart /upload/image).
+     * Returns the server's final name and subfolder — with `overwrite: false`
+     * ComfyUI may rename a clashing file, so callers must use what comes back. */
+    uploadInput(bytes: Uint8Array, filename: string, opts: {
+        subfolder?: string;
+        overwrite?: boolean;
+    }): Promise<{
+        name: string;
+        subfolder: string;
+        type: string;
+    }>;
     /** Pixel sizes of panel-uploaded files, keyed by file name. */
     listMediaSizes(): Promise<Record<string, {
         width: number;

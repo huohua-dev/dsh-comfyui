@@ -44,7 +44,9 @@
 
 Agent 直接驱动 ComfyUI，无需手动操作画布：
 
-- `comfyui_run` —— 提交 API 格式工作流或内置模板（txt2img / img2img / video(Wan 2.1) / **h3_t2v**），返回生成媒体；`mode: "sync"` 等待结果，`mode: "async"` 后台任务（视频一律用 async）。`h3_t2v` 用 `parameters` 按名字传参。
+- `comfyui_run` —— 提交 API 格式工作流或内置模板（txt2img / img2img / video(Wan 2.1) / **h3_t2v** / **h3_r2v**），返回生成媒体；`mode: "sync"` 等待结果，`mode: "async"` 后台任务（视频一律用 async）。H3 模板用 `parameters` 按名字传参，时长训练范围 5–15 秒（15 秒 = 362 帧）。
+  - **`h3_r2v` 参考生视频**：角色参考图 `ref_image_1..3`（第 1 张必填）+ 音色参考 `ref_audio_1` + 首/尾关键帧 `first_frame` / `last_frame` + 上一段续接 `continue_from`（末尾 22 帧与音频钉在第 0 帧），默认 480×864 竖屏 5 秒；可选位留空时整条支路从工作流里干净剪掉。提示词用官方六段式，台词写 `<d>[Chinese] …</d>`。
+- `comfyui_upload` —— 把本机媒体文件（png/jpg/webp/gif/wav/mp3/flac/ogg/m4a/mp4/webm/mov/mkv，≤200MB）上传到 ComfyUI 的 input 目录，可选一层 `subfolder` 与 `overwrite`，返回可直接填进 LoadImage / LoadAudio / LoadVideo 或模板参数的 `子目录/文件名`；图片顺带记录像素尺寸。
 - `comfyui_object_info` —— 列出服务器支持的节点定义，让 Agent 现场构造合法工作流。
 - `comfyui_workflow` —— 管理插件工作流库：`list`（含服务器地址、本机 ComfyUI 目录、加载区素材、每个工作流的参数清单）、`run`（按 id 运行 + 参数覆盖）、**`save` / `update` / `delete`**（在对话里保存、修改、删除工作流）、`skill`（按需读取某工作流的技能包）、`refresh`（重算参数快照）。
 - `comfyui_skill` —— 读写工作流技能包（`list` / `read` / `write` / `append` / `mkdir` / `rename` / `delete` / `enable` / `require`），Agent 可把踩坑经验写回技能包，跨会话复用。
@@ -137,6 +139,7 @@ dsh plugin --profile desktop add dsh-comfyui
 
 - DeepSeek Harness（`web` / `desktop` profile）
 - 一个运行中的 [ComfyUI](https://github.com/comfystack/ComfyUI) 服务器（默认 `http://127.0.0.1:8188`）
+- `h3_r2v` 模板另用核心节点 `MiniMaxH3ReferenceToVideo` / `MiniMaxH3AddGuide`（同一套模型即可；可选官方 `minimax_h3_ref2va_pruned_int8_convrot.safetensors` + LoRA `minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors`，4 步）
 - `h3_t2v` 模板需要 ComfyUI ≥ 0.39（核心节点 `MiniMaxH3ImageToVideo`）与以下模型：`10Eros_Max_h3_TURBO-hybrid_beta5_int8.safetensors`（diffusion_models）、`qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors`（text_encoders，type=minimax）、`minimax_h3_video_vae_int8_convrot.safetensors` 与 `minimax_h3_audio_vae_fp32.safetensors`（vae）
 - `video` 模板需要 [ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper) 与 Wan 2.1 模型
 

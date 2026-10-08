@@ -44,7 +44,9 @@
 
 The agent drives ComfyUI directly, no canvas work needed:
 
-- `comfyui_run` — submit an API-format workflow or a built-in template (`txt2img` / `img2img` / `video` (Wan 2.1) / **`h3_t2v`**) and get media back; `mode: "sync"` waits for the result, `mode: "async"` runs a background job (always for video). `h3_t2v` takes named `parameters`.
+- `comfyui_run` — submit an API-format workflow or a built-in template (`txt2img` / `img2img` / `video` (Wan 2.1) / **`h3_t2v`** / **`h3_r2v`**) and get media back; `mode: "sync"` waits for the result, `mode: "async"` runs a background job (always for video). The H3 templates take named `parameters`; the trained duration range is 5–15 s (15 s = 362 frames).
+  - **`h3_r2v` reference-to-video**: character reference images `ref_image_1..3` (the first is required), a voice-timbre reference `ref_audio_1`, first/last keyframes `first_frame` / `last_frame`, and continuation from a previous clip `continue_from` (its last 22 frames and audio pinned at frame 0); 480×864 portrait, 5 s by default. An empty optional slot removes its whole branch from the workflow. Prompts use the official six-section format with dialogue as `<d>[Chinese] …</d>`.
+- `comfyui_upload` — upload a local media file (png/jpg/webp/gif/wav/mp3/flac/ogg/m4a/mp4/webm/mov/mkv, ≤200 MB) into ComfyUI's input directory, with an optional single-level `subfolder` and `overwrite`; returns the `subfolder/name` reference to put into LoadImage / LoadAudio / LoadVideo or template parameters, and records image pixel sizes.
 - `comfyui_object_info` — list the node definitions your ComfyUI server supports, so the agent can build valid workflows on the fly.
 - `comfyui_workflow` — manage the plugin's runnable-workflow library: `list` (server address, local ComfyUI dirs, load-area media, per-workflow parameter lists), `run` (by id + parameter overrides), **`save` / `update` / `delete`** (keep, change and remove workflows from chat), `skill` (on-demand read of a workflow's skill pack), `refresh` (re-derive a parameter snapshot).
 - `comfyui_skill` — read and write workflow skill packs (`list` / `read` / `write` / `append` / `mkdir` / `rename` / `delete` / `enable` / `require`); the agent can write its lessons back into a pack and reuse them across sessions.
@@ -137,6 +139,7 @@ For a remote ComfyUI behind an authenticated proxy, provide the key via credenti
 
 - DeepSeek Harness (`web` / `desktop` profile)
 - A running [ComfyUI](https://github.com/comfystack/ComfyUI) server (default `http://127.0.0.1:8188`)
+- The `h3_r2v` template additionally uses the core nodes `MiniMaxH3ReferenceToVideo` / `MiniMaxH3AddGuide` (same models; optionally the official `minimax_h3_ref2va_pruned_int8_convrot.safetensors` + LoRA `minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors`, 4 steps)
 - The `h3_t2v` template needs ComfyUI ≥ 0.39 (core node `MiniMaxH3ImageToVideo`) with `10Eros_Max_h3_TURBO-hybrid_beta5_int8.safetensors` (diffusion_models), `qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors` (text_encoders, type minimax), `minimax_h3_video_vae_int8_convrot.safetensors` and `minimax_h3_audio_vae_fp32.safetensors` (vae)
 - The `video` template needs [ComfyUI-WanVideoWrapper](https://github.com/kijai/ComfyUI-WanVideoWrapper) and Wan 2.1 models
 

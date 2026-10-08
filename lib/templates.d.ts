@@ -3,7 +3,9 @@
  * inputs). `txt2img` and `img2img` use only core ComfyUI nodes; `video` is a
  * Wan 2.1 text-to-video skeleton that requires the ComfyUI-WanVideoWrapper
  * custom nodes and matching model files; `h3_t2v` is MiniMax H3 text-to-video
- * on core ComfyUI (≥ 0.39) nodes with the 10Eros TURBO checkpoint. The `guide`
+ * on core ComfyUI (≥ 0.39) nodes with the 10Eros TURBO checkpoint, `h3_r2v`
+ * its reference-to-video sibling (character images, voice reference,
+ * keyframes, continuation — optional branches pruned when empty). The `guide`
  * field is shown to the model so it can override the right node inputs;
  * templates that declare `parameters` are driven by name instead (prompt,
  * width, seconds…), exactly like a saved library workflow.
@@ -37,7 +39,18 @@ export declare const H3_MODELS: {
     readonly clip: "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors";
     readonly videoVae: "minimax_h3_video_vae_int8_convrot.safetensors";
     readonly audioVae: "minimax_h3_audio_vae_fp32.safetensors";
+    /** Official reference-to-video checkpoint (20 steps alone, 4 with the turbo LoRA). */
+    readonly ref2va: "minimax_h3_ref2va_pruned_int8_convrot.safetensors";
+    readonly ref2vaTurboLora: "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors";
 };
+/**
+ * Longest duration the seconds parameters advertise: H3 was trained on
+ * 124–362 frames (≈5–15 s) and h3Frames(15.1) = 362. An editor hint, not a
+ * clamp — longer runs still go through, they just leave the training range.
+ */
+export declare const H3_MAX_SECONDS = 15.1;
+/** Frames of the previous segment pinned at frame 0 when continuing (17k+5 grid). */
+export declare const H3_CONTINUE_FRAMES = 22;
 export declare const TEMPLATES: WorkflowTemplate[];
 /** Look up a template by id. */
 export declare function findTemplate(id: string): WorkflowTemplate | undefined;
