@@ -4673,6 +4673,10 @@ window.__ModuleLoader__.load({
 .dsc-media audio { height: 44px; }
 .dsc-media-img--clickable { cursor: zoom-in; }
 .dsc-media-other { display: block; padding: 8px 6px; font-size: 12px; color: var(--dsw-alias-label-secondary); word-break: break-all; }
+/* Turn-tail wall in the main flow: larger players than the tool-card grid. */
+.dsc-turn-media { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+.dsc-turn-media .dsc-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); }
+.dsc-turn-media .dsc-media img, .dsc-turn-media .dsc-media video { max-height: 480px; }
 .dsc-media-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 6px; }
 .dsc-media-size { font-size: 11px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
 .dsc-media-meta a { display: inline; padding: 0; font-size: 11px; color: var(--dsw-alias-label-secondary); text-decoration: none; }
@@ -5081,10 +5085,192 @@ video.dsc-picker-player { max-height: 180px; }
 			document.head.append(style);
 		}
 		//#endregion
+		//#region src/client/turn-media.ts
+		/**
+		* Turn-level projection of ComfyUI generation results.
+		*
+		* DSH 0.2 folds every tool call of a completed Turn into the collapsible
+		* process group, so the comfyui_run / comfyui_workflow card (tool.call.toolview)
+		* is only visible after the user expands "the thinking process". Images from
+		* other plugins reach the main flow because the reply embeds them as Markdown;
+		* there is no Markdown form for a video. ui-chat's `conversation.chat.turnTail`
+		* list seat renders beneath the closing prose, outside the group — the same
+		* route the built-in schedule_create card takes.
+		*
+		* This module is the React-free half: a ui-conversation event Definition that
+		* accumulates, per Turn, the settled generation results (tool/result `meta`,
+		* the presentation metadata the host writes into the session log). Everything
+		* is read from persisted events, so session replay reproduces the cards with
+		* no host change.
+		*/
+		const TURN_MEDIA_KIND = "dsh-comfyui-media";
+		const TOOL_NAMES = /* @__PURE__ */ new Set(["comfyui_run", "comfyui_workflow"]);
+		function isRecord(value) {
+			return typeof value === "object" && value !== null && !Array.isArray(value);
+		}
+		function asString(value) {
+			return typeof value === "string" ? value : "";
+		}
+		function mediaList(value) {
+			if (!Array.isArray(value)) return [];
+			return value.filter((item) => isRecord(item) && typeof item.url === "string" && typeof item.filename === "string");
+		}
+		function syncEntry(meta, base) {
+			const promptId = asString(meta.promptId);
+			const media = mediaList(meta.media);
+			if (promptId === "" || media.length === 0) return void 0;
+			return {
+				kind: "sync",
+				...base,
+				promptId,
+				status: meta.status === "interrupted" ? "interrupted" : "completed",
+				elapsedMs: typeof meta.elapsedMs === "number" ? meta.elapsedMs : 0,
+				summary: asString(meta.summary),
+				media
+			};
+		}
+		function backgroundEntry(meta, base) {
+			const promptId = asString(meta.promptId);
+			return promptId === "" ? void 0 : {
+				kind: "background",
+				...base,
+				promptId
+			};
+		}
+		/**
+		* Narrow one settled call's presentation meta to a Turn entry, or undefined
+		* for results that carry no generation (list/save/get, errors, empty runs).
+		*/
+		function entryFromMeta(meta, seq, callId) {
+			if (!isRecord(meta)) return void 0;
+			if (meta.action !== void 0) {
+				if (meta.action !== "run") return void 0;
+				const base = {
+					seq,
+					callId,
+					title: asString(meta.workflowName)
+				};
+				if (isRecord(meta.background)) return backgroundEntry(meta.background, base);
+				if (isRecord(meta.result)) return syncEntry(meta.result, base);
+				return;
+			}
+			const base = {
+				seq,
+				callId,
+				title: ""
+			};
+			if (meta.kind === "background") return backgroundEntry(meta, {
+				...base,
+				title: asString(meta.label)
+			});
+			if (meta.kind === "sync") return syncEntry(meta, base);
+		}
+		/** Turn-local accumulator; it publishes Turn data only, no view Node. */
+		const turnMediaDefinition = {
+			kind: TURN_MEDIA_KIND,
+			match: (event) => {
+				if (event.type === "turn/start") return {
+					id: String(event.data.turn),
+					role: "start"
+				};
+				if (event.type === "tool/call") return {
+					id: String(event.data.turn),
+					role: "update"
+				};
+				if (event.type === "tool/result" && event.surfaceOp === "append") return {
+					id: String(event.data.turn),
+					role: "update"
+				};
+				return null;
+			},
+			start: (_context, match) => {
+				if (match.event.type !== "turn/start") throw new Error(`${TURN_MEDIA_KIND} start requires turn/start`);
+				return {
+					turn: match.event.data.turn,
+					calls: /* @__PURE__ */ new Map(),
+					entries: []
+				};
+			},
+			update: (context, match) => {
+				const event = match.event;
+				if (event.type === "tool/call") {
+					const name = asString(event.data.name);
+					if (!TOOL_NAMES.has(name)) return context.state;
+					const calls = new Map(context.state.calls);
+					calls.set(String(event.data.callId), { name });
+					return {
+						...context.state,
+						calls
+					};
+				}
+				if (event.type !== "tool/result") return context.state;
+				const message = event.data.message;
+				if (message === void 0 || message.isError === true) return context.state;
+				const callId = String(message.source?.callId);
+				if (!context.state.calls.has(callId)) return context.state;
+				const entry = entryFromMeta(event.data.meta, event.seq, callId);
+				return entry === void 0 ? context.state : {
+					...context.state,
+					entries: [...context.state.entries, entry]
+				};
+			},
+			buildLocationData: (context, scope, previous) => {
+				if (scope !== "turn" || context.state === void 0) return null;
+				if (previous?.kind === "turn" && previous.turn === context.state.turn && previous.key === "dsh-comfyui-media" && previous.value.entries === context.state.entries) return previous;
+				return {
+					kind: "turn",
+					turn: context.state.turn,
+					key: TURN_MEDIA_KIND,
+					value: { entries: context.state.entries }
+				};
+			}
+		};
+		/** Entries of the owner's Turn up to its end, or [] when it generated nothing. */
+		function selectTurnMedia(owner) {
+			const data = owner.turn?.data?.get(TURN_MEDIA_KIND);
+			if (!isRecord(data) || !Array.isArray(data.entries)) return [];
+			const bound = owner.turn?.end?.seq ?? owner.seq ?? Number.POSITIVE_INFINITY;
+			return data.entries.filter((entry) => entry.seq <= bound);
+		}
+		//#endregion
+		//#region src/client/turn-tail.tsx
+		/**
+		* Turn-tail media wall (`conversation.chat.turnTail`, id `dsh-comfyui-media`).
+		*
+		* Renders the ComfyUI results of a completed Turn beneath its closing prose,
+		* outside the folded process group, so a finished video plays in the main
+		* conversation flow like an image does. Reuses the tool card's result and
+		* background components: a background run keeps polling /comfyui/jobs/media
+		* and swaps to the player when the job lands, with the local archive first.
+		*/
+		function TurnMediaTail(props) {
+			const entries = selectTurnMedia(props);
+			if (entries.length === 0) return null;
+			const { t } = props;
+			return (0, react.createElement)("div", { className: "dsc-turn-media" }, entries.map((entry) => entry.kind === "background" ? (0, react.createElement)(BackgroundCard, {
+				key: entry.callId,
+				label: entry.title,
+				promptId: entry.promptId,
+				t
+			}) : (0, react.createElement)(ResultCard, {
+				key: entry.callId,
+				title: entry.title,
+				result: {
+					kind: "sync",
+					promptId: entry.promptId,
+					status: entry.status,
+					elapsedMs: entry.elapsedMs,
+					media: entry.media,
+					summary: entry.summary
+				},
+				t
+			})));
+		}
+		//#endregion
 		//#region src/client/index.ts
 		/**
-		* dsh-comfyui client half: registers the comfyui_run tool card and the
-		* ComfyUI settings page. Registered through slots.inject so contributions
+		* dsh-comfyui client half: registers the comfyui_run tool card, the Turn-tail
+		* media wall and the ComfyUI settings page. Registered through slots.inject so contributions
 		* wait on the real slot declarations and unwind with this plugin's fiber.
 		*/
 		const name = "dsh-comfyui";
@@ -5106,6 +5292,17 @@ video.dsc-picker-player { max-height: 180px; }
 				t,
 				...props ?? {}
 			})));
+			ctx.inject(["uiConversation"], (sub) => {
+				sub.uiConversation?.events.register(turnMediaDefinition);
+				sub.slots.inject("conversation.chat.turnTail", () => sub.slots.register({
+					name: "conversation.chat.turnTail",
+					id: TURN_MEDIA_KIND,
+					order: 30
+				}, (props) => (0, react.createElement)(TurnMediaTail, {
+					t,
+					...props ?? {}
+				})));
+			});
 			ctx.slots.inject("settings.section", () => ctx.slots.register({
 				name: "settings.section",
 				id: "comfyui",
