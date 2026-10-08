@@ -31,6 +31,7 @@
 - **Video from chat**: built-in `h3_t2v` template (MiniMax H3 text-to-video, 10Eros TURBO) driven by named `prompt / width / height / seconds / seed / steps`; seconds become frames (3 s = 73, 5 s = 124).
 - **Manage workflows from chat**: `comfyui_workflow` gains `save` (from a run's `prompt_id`, a built-in template, or API JSON), `update` and `delete`.
 - **Results land on this machine**: each run keeps its media plus `meta.json` (full workflow, seeds, parameters, sha256) under `archiveDir/<prompt_id>/`; chat cards play the local copy first, so history keeps playing (and seeking) with ComfyUI offline.
+- **Videos show up in the conversation**: results render below that turn's reply in the main flow (like images), no need to expand the folded process; a background job shows its progress there and turns into a player when it lands.
 - **0.2 background jobs**: owned by the session, live "queued / sampling x/8" progress in the DSH jobs panel, `job_kill` settles immediately.
 - **Cancel only your own prompt**: pending → dequeued, running → interrupted by id (v0.39 `/api/jobs/{id}/cancel`); no global interrupt anywhere.
 - **Route protection**: every `/comfyui/*` route requires a loopback Host, refuses cross-site requests and foreign Origins, and checks the DSH browser session; media routes only read the plugin's own archive and validated ComfyUI `/view` references. **Plugin routes are therefore no longer reachable from other LAN devices.**

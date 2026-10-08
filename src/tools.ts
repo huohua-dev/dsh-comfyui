@@ -323,12 +323,12 @@ export function renderRunResultText(result: RunResult): string {
     lines.push(`  ${item.kind}: ${item.url}${item.localPath !== undefined ? `（已存到本机 ${item.localPath}）` : ''}`)
   }
   if (result.archiveError !== undefined) lines.push(`注意：本地归档失败（${result.archiveError}），卡片暂时经 ComfyUI 代理播放。`)
-  if (result.media.length > 0) lines.push('对话里的工具卡片会直接播放/显示这些文件，不需要再贴链接。')
+  if (result.media.length > 0) lines.push('这些文件会显示在调用这次生成的那一轮回复下方（对话主流程里）直接播放，不需要再贴链接。')
   return lines.join('\n')
 }
 
 function backgroundText(result: BackgroundResult): string {
-  return `ComfyUI generation started in the background (job ${result.jobId}, prompt ${result.promptId}). The chat card shows progress and plays the result when it finishes; read the result text with job_output, stop it with job_kill (only this prompt is cancelled).`
+  return `ComfyUI generation started in the background (job ${result.jobId}, prompt ${result.promptId}). A player card appears below this turn's reply in the main conversation flow, shows progress and plays the result when it finishes — no need to paste links; read the result text with job_output, stop it with job_kill (only this prompt is cancelled).`
 }
 
 function renderRunResult(_args: unknown, value: unknown): unknown[] {
@@ -466,7 +466,7 @@ function runDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefinition {
     description: [
       'Submit a workflow to the configured ComfyUI server and return the generated media (images/videos).',
       'Provide exactly one of `workflow` (ComfyUI API-format object: node id → { class_type, inputs }) or `template` (built-in: txt2img | img2img | video | h3_t2v).',
-      'h3_t2v — MiniMax H3 text-to-video with sound: pass `parameters` by name {prompt (required), width, height (multiples of 32; 480p = 864×480, 768p = 1344×768), seconds (3 → 73 frames, 5 → 124), seed (random if omitted), steps (default 8)} and ALWAYS mode "async". Finished videos are downloaded to the local archive and play in the chat card.',
+      'h3_t2v — MiniMax H3 text-to-video with sound: pass `parameters` by name {prompt (required), width, height (multiples of 32; 480p = 864×480, 768p = 1344×768), seconds (3 → 73 frames, 5 → 124), seed (random if omitted), steps (default 8)} and ALWAYS mode "async". Finished videos are downloaded to the local archive and play in a card below your reply.',
       'Use `inputs` to override node inputs by id, e.g. {"6": {"text": "a red cat"}} for the positive prompt in the templates.',
       'Templates: txt2img — 4 checkpoint, 5 EmptyLatentImage (width/height), 6 positive text, 7 negative text, 3 KSampler (seed/steps/cfg/denoise), 9 SaveImage. img2img — 10 LoadImage (image), 11 VAEEncode, 6 text, 3 KSampler (denoise). video — Wan 2.1, needs ComfyUI-WanVideoWrapper custom nodes (10 UNETLoader, 13 WanTextEncode, 14 WanImageToVideo, 15 KSampler, 17 SaveVideo).',
       'Inspect available node types with comfyui_object_info before hand-writing a workflow.',

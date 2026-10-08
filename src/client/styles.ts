@@ -27,6 +27,10 @@ const CSS = `
 .dsc-media audio { height: 44px; }
 .dsc-media-img--clickable { cursor: zoom-in; }
 .dsc-media-other { display: block; padding: 8px 6px; font-size: 12px; color: var(--dsw-alias-label-secondary); word-break: break-all; }
+/* Turn-tail wall in the main flow: larger players than the tool-card grid. */
+.dsc-turn-media { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+.dsc-turn-media .dsc-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); }
+.dsc-turn-media .dsc-media img, .dsc-turn-media .dsc-media video { max-height: 480px; }
 .dsc-media-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 6px; }
 .dsc-media-size { font-size: 11px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
 .dsc-media-meta a { display: inline; padding: 0; font-size: 11px; color: var(--dsw-alias-label-secondary); text-decoration: none; }

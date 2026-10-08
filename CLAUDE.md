@@ -107,11 +107,12 @@ Agent ──tools──┐
 
 ## 客户端模块（`src/client/`，React + slots）
 
-`index.ts` 通过 `ctx.slots.inject` 注册四处贡献：
+`index.ts` 通过 `ctx.slots.inject` 注册五处贡献（turnTail 那处另在 `ctx.inject(['uiConversation'])` 子 fiber 里注册一个 ui-conversation 事件 Definition）：
 
 | 槽位 | 内容 |
 | --- | --- |
-| `tool.call.toolview`（keys `comfyui_run` / `comfyui_workflow`） | `card.tsx`：对话内媒体墙卡片（生成中状态 / 结果 / 点击放大） |
+| `tool.call.toolview`（keys `comfyui_run` / `comfyui_workflow`） | `card.tsx`：对话内媒体墙卡片（生成中状态 / 结果 / 点击放大）。**注意**：DSH 0.2 把已完成轮次的所有工具调用折进「思考过程」分组，这张卡只在展开后可见 |
+| `conversation.chat.turnTail`（id `dsh-comfyui-media`） | `turn-tail.tsx` + `turn-media.ts`：在该轮**收尾回复下方**（折叠分组之外，与内置 schedule_create 卡同一路线）复用 `ResultCard` / `BackgroundCard` 显示本轮生成结果。数据来自 `turnMediaDefinition`：按 Turn 累积 `comfyui_run` / `comfyui_workflow run` 的 tool/result `meta`（只认 `surfaceOp: append`，压缩替换副本不重复出卡），全部取自会话日志，回放即可重现 |
 | `settings.section`（id `comfyui`） | `settings.tsx`：设置页，读写 `/comfyui/config`，`/comfyui/test` 探测，含 zh/en 界面语言切换 |
 | `shell.overlay`（id `comfyui.panel`） | `panel.tsx`：浮动面板，三个页签 **工作流 / 资产 / 队列**，可拖拽缩放，几何信息存 localStorage（`clampPos`/`healGeom` 在拖拽、窗口缩放、换显示器、开闭面板时把标题栏钳在视口内，永不失去抓取面；标题栏「↺」按钮复位位置与大小、清 localStorage）；工作流页底部是多加载位的加载区；技能包编辑器支持「刷新」重新读盘与子目录折叠；资产页卡片带删除确认框 |
 | `conversation.session.header.actions`（id `comfyui`） | `trigger.tsx`：会话头部按钮，开关面板 |
@@ -162,6 +163,7 @@ Agent ──tools──┐
 17. **只取消自己的任务**：一律 `client.cancelOwn(promptId)`（v0.39 `POST /api/jobs/{id}/cancel`，原子；旧服务器回落 `/queue {delete}` / `/interrupt {prompt_id}`）。**禁止**不带 id 的 `/interrupt`——它会中断别人正在跑的任务。`waitForCompletion` 在 abort（包括睡眠中 abort）时取消本 prompt；后台任务传 `cancelOnAbort: false` 由任务自己的 `cancelRemote` 取消，保证每次 kill 只发一次取消。
 18. **所有路由先过 `route-guard`**（读也一样）：`mountComfyUIRoutes` / `mountComfyUIProxy` 收到的 `register` 已经包了 guard，新增路由照常 `webServer.register` 即可；不要另起一个绕过 guard 的注册。媒体与归档路径一律当不可信输入：归档只认 meta.json 列出的文件，`/view` 引用过 `checkViewRef`。
 19. **连不上 ComfyUI 的错误**由 `ComfyUIClient.reach()` 统一生成：`无法连接 ComfyUI（baseUrl）：原因。<unreachableHint>`（`code: 'unreachable'`）。HTTP 错误状态不改写。插件**不包含**切换远端模式的功能，提示文字可配置。
+20. **成片要出现在对话主流程，靠 turnTail 而不是工具卡**：DSH 0.2 的 ui-chat 把一个已完成 Turn 的所有 tool-call 折进「思考过程」分组（`INDEPENDENT` 之外的节点一律进组），工具卡在折叠后不可见；Markdown 也没有视频形式。所以结果靠 `conversation.chat.turnTail` 渲染在收尾回复下方。新增会产出媒体的工具或改 meta 形状时，同步 `turn-media.ts` 的 `TOOL_NAMES` / `entryFromMeta` 与 `tests/turn-media.spec.ts`。
 
 ## 代码风格约定
 

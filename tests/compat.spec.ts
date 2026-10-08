@@ -45,12 +45,14 @@ describe('package manifest', () => {
     const inject = pkg.dsh.client.inject
     expect(inject).not.toContain('@deepseek-ai/dsh-client-runtime')
     // Slot owners in 0.2.0-rc.2: tool.call.toolview → ui-tool, settings.section →
-    // ui-settings-general, shell.overlay → ui-layout, session header actions → ui-conversation.
+    // ui-settings-general, shell.overlay → ui-layout, session header actions → ui-conversation,
+    // conversation.chat.turnTail → ui-chat (the Turn-tail media wall).
     expect(new Set(inject)).toEqual(new Set([
       '@deepseek-ai/dsh-client-ui-tool',
       '@deepseek-ai/dsh-client-ui-settings-general',
       '@deepseek-ai/dsh-client-ui-layout',
       '@deepseek-ai/dsh-client-ui-conversation',
+      '@deepseek-ai/dsh-client-ui-chat',
     ]))
     expect(pkg.dsh.client.platform).toBe('web')
   })

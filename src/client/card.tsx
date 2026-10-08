@@ -22,7 +22,7 @@ interface MediaItem {
   localPath?: string
 }
 
-interface SyncMeta {
+export interface SyncMeta {
   kind: 'sync'
   promptId: string
   status: 'completed' | 'interrupted'
@@ -143,7 +143,7 @@ function MediaItem({ item, t, onOpen }: {
   )
 }
 
-function ResultCard({ title, result, t }: {
+export function ResultCard({ title, result, t }: {
   title: string
   result: SyncMeta
   t: ComfyUICardProps['t']
@@ -182,7 +182,7 @@ const POLL_MAX_FAILURES = 20
  * only counts polls where the job is in neither history nor the queue. */
 const POLL_UNKNOWN_GRACE = 100
 
-function BackgroundCard({ label, promptId, t }: {
+export function BackgroundCard({ label, promptId, t }: {
   label: string
   promptId: string
   t: ComfyUICardProps['t']
