@@ -33,7 +33,7 @@
     "build:host": "tsc -p tsconfig.json",
     "build:client": "tsdown -c tsdown.config.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "npm run build:host && vitest run && node scripts/run-legacy-tests.mjs",
+    "test": "npm run build && vitest run && node scripts/run-legacy-tests.mjs",
     "prepack": "npm run build"
   },
   "keywords": [
@@ -76,10 +76,10 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-tool",
+        "@deepseek-ai/dsh-client-ui-settings-general",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-conversation"
       ]
     }
   }

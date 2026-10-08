@@ -532,6 +532,8 @@ export class ComfyUIClient {
     timeoutMs: number
     pollIntervalMs: number
     signal: AbortSignal
+    /** Called once per poll round while the prompt is not finished (progress reporting). */
+    onPoll?: () => Promise<void> | void
   }): Promise<ComfyUIHistoryEntry> {
     const { promptId, timeoutMs, pollIntervalMs, signal } = opts
     const deadline = Date.now() + timeoutMs
@@ -552,6 +554,13 @@ export class ComfyUIClient {
       }
       if (Date.now() >= deadline) {
         throw new ComfyUIError(`ComfyUI generation timed out after ${timeoutMs} ms (prompt ${promptId})`)
+      }
+      if (opts.onPoll !== undefined) {
+        try {
+          await opts.onPoll()
+        } catch {
+          // Progress is best-effort; a failed probe never fails the wait.
+        }
       }
       await sleep(pollIntervalMs, signal)
     }

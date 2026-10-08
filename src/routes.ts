@@ -1173,7 +1173,7 @@ export function mountComfyUIRoutes(ctx: Context, runtime: ComfyUIRuntime): (() =
         const values = typeof body.parameters === 'object' && body.parameters !== null
           ? (body.parameters as Record<string, unknown>)
           : {}
-        const promptId = await runtime.queue(saved.workflow, {
+        const { promptId } = await runtime.queue(saved.workflow, {
           workflowName: saved.name,
           workflowId: saved.id,
           source: 'panel',

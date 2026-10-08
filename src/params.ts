@@ -559,6 +559,9 @@ export function applyWorkflowParameters(
   objectInfo?: Record<string, unknown>,
   imageSizes?: Record<string, { width: number; height: number }>,
   loadArea?: Array<{ name: string; kind: 'image' | 'video' | 'audio' }>,
+  /** Filled with the value each parameter actually took (explicit, default,
+   * load-area or randomized) — the record a run's metadata keeps. */
+  effective?: Record<string, unknown>,
 ): Workflow {
   const copy: Workflow = structuredClone(workflow)
   let effectiveValues = values
@@ -676,6 +679,7 @@ export function applyWorkflowParameters(
       if (coerced === undefined) continue
       value = coerced
     }
+    if (effective !== undefined) effective[param.name] = value
     if (param.upload === 'media') continue // merged back into the JSON array below
     node.inputs[param.inputKey] = value
   }

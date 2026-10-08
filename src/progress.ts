@@ -10,7 +10,8 @@
 export interface RunProgress {
   value: number
   max: number
-  node: number | null
+  /** Node id the event came from (ComfyUI sends it as a string). */
+  node: string | null
 }
 
 export class ProgressTracker {
@@ -69,7 +70,7 @@ export class ProgressTracker {
     this.progress.set(promptId, {
       value,
       max,
-      node: typeof message.data.node === 'number' ? message.data.node : null,
+      node: typeof message.data.node === 'string' || typeof message.data.node === 'number' ? String(message.data.node) : null,
     })
   }
 

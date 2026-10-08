@@ -10,7 +10,7 @@ import type {} from '@deepseek-ai/dsh-settings'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { Config, resolveConfig, type Config as ConfigType } from './config.js'
-import { ComfyUIClient, CLIENT_ID } from './comfyui.js'
+import { ComfyUIClient, CLIENT_ID, collectMedia } from './comfyui.js'
 import { ComfyUIStore } from './store.js'
 import { QueueTracker } from './queue.js'
 import { convertGraphToApi, flattenDynamicCombos } from './convert.js'
@@ -207,11 +207,12 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
       const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
       // Heals library entries saved with the pre-0.5.2 wrapped DynamicCombo shape (Issue #10).
       let prompt = flattenDynamicCombos(workflow as unknown as Workflow)
+      const values: Record<string, unknown> = {}
       if (meta.parameters !== undefined && meta.parameters.length > 0) {
         const objectInfo = await objectInfoCached(client)
         const slots = await store.loadSlots()
         const loaded = slots.filter((slot): slot is NonNullable<typeof slot> => slot !== null)
-        prompt = applyWorkflowParameters(prompt, meta.parameters, meta.values ?? {}, objectInfo, await store.loadMediaSizes(), loaded)
+        prompt = applyWorkflowParameters(prompt, meta.parameters, meta.values ?? {}, objectInfo, await store.loadMediaSizes(), loaded, values)
       }
       const extraData: Record<string, unknown> = {}
       if (meta.workflowId !== undefined && meta.workflowId !== null && meta.workflowName !== null) {
@@ -220,8 +221,9 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
       }
       const promptId = await client.queuePrompt(prompt, { extraData })
       tracker.track({ promptId, ts: new Date().toISOString(), workflowName: meta.workflowName, source: meta.source })
-      return promptId
+      return { promptId, prompt, values }
     },
+    complete: async (promptId, entry) => collectMedia({ promptId, entry, maxItems: resolved.maxMediaItems, proxyBase: runtime.proxyBase() }),
     untrack: (promptId) => tracker.untrack(promptId),
     trackedRuns: () => tracker.list(),
     queueProgress: (promptId) => progress.get(promptId),
@@ -372,12 +374,15 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
       })
       return
     }
-    // dsh 0.1.7+: forms are projected from the volatile Config fields and a
-    // save arrives through loader/volatile-update above. This plugin ships its
-    // own settings page, so opt out of any auto-generated one.
+    // dsh 0.1.7+/0.2: forms are projected from the volatile Config fields and
+    // a save arrives through loader/volatile-update above. On 0.2 the plugin
+    // manager page renders that form for every plugin whose policy is
+    // `auto: true`, which is where users expect to set the ComfyUI address —
+    // so keep it on (the plugin's own settings section stays as a second door
+    // with the connection test button).
     if (typeof settings.configure === 'function') {
       const configure = settings.configure.bind(settings)
-      settingsCtx.effect(() => configure({ auto: false }, ctx.fiber), 'dsh-comfyui: settings page policy')
+      settingsCtx.effect(() => configure({ auto: true }, ctx.fiber), 'dsh-comfyui: settings page policy')
     }
   })
 

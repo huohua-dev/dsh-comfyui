@@ -7,7 +7,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './config.js'
-import { ComfyUIClient, collectMedia } from './comfyui.js'
+import type { ComfyUIClient, ComfyUIHistoryEntry } from './comfyui.js'
 import { TEMPLATES, findTemplate, cloneWorkflow, applyTemplateInputs } from './templates.js'
 import type { AssetRecord, LoadSlot, StoredWorkflow } from './store.js'
 import type { GraphAnalysis } from './analyze.js'
@@ -16,6 +16,7 @@ import type { QueuedRun } from './queue.js'
 import { refreshParameterMetadata, type Workflow, type WorkflowParameter } from './params.js'
 import type { HostHint } from './host-hint.js'
 import { SKILL_MAIN, joinFrontmatter, type WorkflowSkillPacks } from './skillpack.js'
+import { ownerSessionOf, startGenerationJob, type JobsService } from './jobs.js'
 
 /** A workflow saved on the ComfyUI server (userdata/workflows), with extract status. */
 export interface ComfyUIComfyWorkflow {
@@ -42,14 +43,18 @@ export interface ComfyUIRuntime {
   settingsWritable(): boolean
   updateConfig(patch: Record<string, unknown>): Promise<{ ok: true } | { ok: false; error: string }>
   /** Queue a workflow and track it in the queue tracker. `meta.parameters`
-   * applies adjustable parameters (values/random seeds) before submitting. */
+   * applies adjustable parameters (values/random seeds) before submitting.
+   * Returns the prompt id and the exact API prompt that was submitted. */
   queue(workflow: unknown, meta: {
     workflowName: string | null
     workflowId?: string | null
     source: string
     parameters?: WorkflowParameter[]
     values?: Record<string, unknown>
-  }): Promise<string>
+  }): Promise<QueuedPrompt>
+  /** Collect a finished prompt's media (archiving it locally first when an
+   * archive is configured) — the one completion path every run goes through. */
+  complete(promptId: string, entry: ComfyUIHistoryEntry): Promise<RunMediaItem[]>
   /** Stop tracking a prompt (used when a tool call fails before completion). */
   untrack(promptId: string): void
   /** Every prompt this plugin queued and is still waiting on. */
@@ -110,6 +115,14 @@ export interface ComfyUIRuntime {
   }): Promise<{ ok: true; saved: StoredWorkflow[]; analysis: GraphAnalysis; warnings: string[] } | { ok: false; error: string }>
 }
 
+/** A submitted prompt: its id and the final API prompt ComfyUI received. */
+export interface QueuedPrompt {
+  promptId: string
+  prompt: Record<string, { class_type: string; inputs: Record<string, unknown> }>
+  /** Effective parameter values (explicit, defaulted and randomized). */
+  values: Record<string, unknown>
+}
+
 /** Execution identity handed to tool execute. */
 interface ToolRunContext {
   agent?: unknown
@@ -151,7 +164,12 @@ export interface RunMediaItem {
   node: string
   index: number
   kind: 'image' | 'video' | 'audio' | 'other'
+  /** Preferred same-origin URL: the local archive copy when there is one. */
   url: string
+  /** The ComfyUI /view proxy URL, the fallback when the local copy is gone. */
+  proxyUrl?: string
+  /** Absolute path of the local archive copy on the DSH machine. */
+  localPath?: string
 }
 
 /** Synchronous completion result. */
@@ -186,18 +204,6 @@ interface ToolDefinition {
   execute(args: Record<string, unknown>, exec: ToolRunContext): Promise<unknown>
 }
 
-interface JobsService {
-  start(spec: {
-    kind: string
-    label: string
-    owner?: unknown
-    run(): {
-      cancel(reason?: string): void
-      done: Promise<{ status: 'completed' | 'killed' | 'failed'; detail?: string; output?: string }>
-      readOutput?(): string
-    }
-  }): string
-}
 
 const TOOL_TIMEOUT_MS = 3_600_000
 
@@ -257,64 +263,139 @@ function summarizeMedia(media: RunMediaItem[]): string {
   return parts.join(', ')
 }
 
-function renderRunResult(_args: unknown, value: unknown): unknown[] {
-  const result = value as RunResult | BackgroundResult
-  if (result.kind === 'background') {
-    return [{
-      type: 'text',
-      text: `ComfyUI generation started in the background (job ${result.jobId}, prompt ${result.promptId}). Collect the result with job_output.`,
-    }]
-  }
+/** Model-facing text of a finished run (tool result and job result alike). */
+export function renderRunResultText(result: RunResult): string {
   const lines = [
     `ComfyUI ${result.status} (prompt ${result.promptId}) in ${result.elapsedMs} ms — ${summarizeMedia(result.media)}`,
   ]
   for (const item of result.media) {
-    lines.push(`  ${item.kind}: ${item.url}`)
+    lines.push(`  ${item.kind}: ${item.url}${item.localPath !== undefined ? `（已存到本机 ${item.localPath}）` : ''}`)
   }
-  return [{ type: 'text', text: lines.join('\n') }]
+  if (result.media.length > 0) lines.push('对话里的工具卡片会直接播放/显示这些文件，不需要再贴链接。')
+  return lines.join('\n')
+}
+
+function backgroundText(result: BackgroundResult): string {
+  return `ComfyUI generation started in the background (job ${result.jobId}, prompt ${result.promptId}). The chat card shows progress and plays the result when it finishes; read the result text with job_output, stop it with job_kill (only this prompt is cancelled).`
+}
+
+function renderRunResult(_args: unknown, value: unknown): unknown[] {
+  const result = value as RunResult | BackgroundResult
+  if (result.kind === 'background') return [{ type: 'text', text: backgroundText(result) }]
+  return [{ type: 'text', text: renderRunResultText(result) }]
+}
+
+/** Node classes whose progress events mean "sampling" / "decoding". */
+const SAMPLER_CLASSES = /^(KSampler|KSamplerAdvanced|SamplerCustom|SamplerCustomAdvanced)$/
+const DECODE_CLASSES = /VAEDecode/
+
+/**
+ * One human-readable progress line for a queued prompt: the WebSocket
+ * progress when the server reported any, else its queue position.
+ */
+export async function progressLine(
+  runtime: Pick<ComfyUIRuntime, 'queueProgress'>,
+  client: Pick<ComfyUIClient, 'getQueue'>,
+  promptId: string,
+  workflow?: Record<string, { class_type: string }>,
+): Promise<string | undefined> {
+  const live = runtime.queueProgress(promptId)
+  if (live !== undefined) {
+    const classType = live.node !== null ? workflow?.[String(live.node)]?.class_type : undefined
+    const stage = classType === undefined ? '执行' : SAMPLER_CLASSES.test(classType) ? '采样' : DECODE_CLASSES.test(classType) ? '解码' : classType
+    return `${stage} ${live.value}/${live.max}`
+  }
+  const queue = await client.getQueue().catch(() => undefined)
+  if (queue === undefined) return undefined
+  if (queue.queue_running.some((item) => item.prompt_id === promptId)) return '运行中（加载模型 / 编码提示词）'
+  const pending = [...queue.queue_pending].sort((a, b) => a.number - b.number)
+  const index = pending.findIndex((item) => item.prompt_id === promptId)
+  if (index >= 0) return `排队中（前面还有 ${index + queue.queue_running.length} 个任务）`
+  return undefined
+}
+
+/** Everything one generation launch needs, from either tool. */
+interface LaunchSpec {
+  workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>
+  label: string
+  workflowName: string | null
+  workflowId?: string | null
+  source: string
+  parameters?: WorkflowParameter[]
+  values?: Record<string, unknown>
+  mode: 'sync' | 'async'
+  waitMs: number
 }
 
 /**
- * Wait for a queued prompt and collect its media. Untracks the prompt when
- * the wait fails; an interrupted wait reports an interrupted result instead
- * of throwing.
+ * Queue a workflow, then either wait for it here (sync) or hand the wait to a
+ * background job (async). Both paths finish through `runtime.complete`, which
+ * collects the media (and, from step 4 on, archives it locally).
  */
-async function waitSync(
+async function launch(
   runtime: ComfyUIRuntime,
-  client: ComfyUIClient,
-  promptId: string,
-  config: Config,
-  signal: AbortSignal,
-  timeoutMs?: number,
-): Promise<RunResult> {
-  const startedAt = Date.now()
-  try {
-    const entry = await client.waitForCompletion({
-      promptId,
-      timeoutMs: timeoutMs ?? config.timeoutMs,
-      pollIntervalMs: config.pollIntervalMs,
-      signal,
-    })
-    const items = collectMedia({ promptId, entry, maxItems: config.maxMediaItems, proxyBase: runtime.proxyBase() })
-    return {
-      kind: 'sync',
-      promptId,
-      status: 'completed',
-      elapsedMs: Date.now() - startedAt,
-      media: items,
-      summary: summarizeMedia(items),
-    }
-  } catch (error) {
-    runtime.untrack(promptId)
-    if (error instanceof Error && error.name === 'ComfyUIError' && error.message.includes('interrupted')) {
-      return {
-        kind: 'sync',
+  ctx: Context,
+  exec: ToolRunContext,
+  spec: LaunchSpec,
+): Promise<RunResult | BackgroundResult> {
+  const config = runtime.getConfig()
+  const client = runtime.createClient(await runtime.getApiKey())
+  // Resolve the jobs registry before queueing, so a host without background
+  // jobs fails without leaving an orphan prompt on the server.
+  const jobs = spec.mode === 'async' ? ctx.get('jobs') as JobsService | undefined : undefined
+  if (spec.mode === 'async' && jobs === undefined) {
+    throw new Error('background jobs unavailable — load @deepseek-ai/dsh-jobs-local and @deepseek-ai/dsh-tool-jobs')
+  }
+  const queued = await runtime.queue(spec.workflow, {
+    workflowName: spec.workflowName,
+    workflowId: spec.workflowId,
+    source: spec.source,
+    parameters: spec.parameters,
+    values: spec.values,
+  })
+  const { promptId } = queued
+  const wait = async (signal: AbortSignal, onPoll?: () => Promise<void>): Promise<RunResult> => {
+    const startedAt = Date.now()
+    try {
+      const entry = await client.waitForCompletion({
         promptId,
-        status: 'interrupted',
-        elapsedMs: Date.now() - startedAt,
-        media: [],
-        summary: 'interrupted before completion',
-      }
+        timeoutMs: spec.waitMs,
+        pollIntervalMs: config.pollIntervalMs,
+        signal,
+        ...(onPoll !== undefined ? { onPoll } : {}),
+      })
+      const media = await runtime.complete(promptId, entry)
+      return { kind: 'sync', promptId, status: 'completed', elapsedMs: Date.now() - startedAt, media, summary: summarizeMedia(media) }
+    } catch (error) {
+      runtime.untrack(promptId)
+      throw error
+    }
+  }
+
+  if (jobs !== undefined) {
+    const owner = ownerSessionOf(exec.agent)
+    const jobId = startGenerationJob(jobs, {
+      label: spec.label,
+      ...(owner !== undefined ? { owner } : {}),
+      work: async (signal, progress) => {
+        progress('已提交，等待 ComfyUI')
+        const result = await wait(signal, async () => {
+          const line = await progressLine(runtime, client, promptId, queued.prompt)
+          if (line !== undefined) progress(line)
+        })
+        progress('完成')
+        return renderRunResultText(result)
+      },
+      cancelRemote: () => client.interrupt(),
+    })
+    return { kind: 'background', jobId, promptId, label: spec.label }
+  }
+
+  try {
+    return await wait(exec.signal)
+  } catch (error) {
+    if (error instanceof Error && error.name === 'ComfyUIError' && error.message.includes('interrupted')) {
+      return { kind: 'sync', promptId, status: 'interrupted', elapsedMs: 0, media: [], summary: 'interrupted before completion' }
     }
     throw error
   }
@@ -367,59 +448,9 @@ function runDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefinition {
       const mode = args.mode === undefined ? 'sync' : args.mode
       if (mode !== 'sync' && mode !== 'async') throw new Error(`comfyui_run: mode must be sync or async, got ${String(mode)}`)
       const config = runtime.getConfig()
-      const apiKey = await runtime.getApiKey()
-      const client = runtime.createClient(apiKey)
       const { workflow, label } = buildWorkflow(args)
-      const promptId = await runtime.queue(workflow, { workflowName: label, source: 'tool' })
       const waitMs = typeof args.timeout_ms === 'number' ? args.timeout_ms : config.timeoutMs
-
-      if (mode === 'async') {
-        const jobs = ctx.get('jobs') as JobsService | undefined
-        if (jobs === undefined) {
-          throw new Error('comfyui_run: background jobs unavailable — load @deepseek-ai/dsh-jobs-local and @deepseek-ai/dsh-tool-jobs')
-        }
-        const jobId = jobs.start({
-          kind: 'comfyui',
-          label,
-          ...(exec.agent !== undefined ? { owner: exec.agent } : {}),
-          run: () => {
-            const startedAt = Date.now()
-            const done = (async () => {
-              try {
-                const entry = await client.waitForCompletion({
-                  promptId,
-                  timeoutMs: waitMs,
-                  pollIntervalMs: config.pollIntervalMs,
-                  signal: new AbortController().signal,
-                })
-                const items = collectMedia({ promptId, entry, maxItems: config.maxMediaItems, proxyBase: runtime.proxyBase() })
-                const result: RunResult = {
-                  kind: 'sync',
-                  promptId,
-                  status: 'completed',
-                  elapsedMs: Date.now() - startedAt,
-                  media: items,
-                  summary: summarizeMedia(items),
-                }
-                return { status: 'completed' as const, output: JSON.stringify(result) }
-              } catch (error) {
-                runtime.untrack(promptId)
-                const message = error instanceof Error ? error.message : String(error)
-                return { status: 'failed' as const, detail: 'comfyui', output: message }
-              }
-            })()
-            return {
-              cancel: () => { void client.interrupt().catch(() => undefined) },
-              done,
-            }
-          },
-        })
-        const result: BackgroundResult = { kind: 'background', jobId, promptId, label }
-        return result
-      }
-
-      const result = await waitSync(runtime, client, promptId, config, exec.signal, waitMs)
-      return result
+      return launch(runtime, ctx, exec, { workflow, label, workflowName: label, source: 'tool', mode, waitMs })
     },
   }
 }
@@ -588,7 +619,7 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
           return [{ type: 'text', text: `ComfyUI workflow ${data.name ?? data.id}: ${JSON.stringify(data.workflow)}` }]
         }
         if (data.background !== undefined) {
-          return [{ type: 'text', text: `ComfyUI workflow started in the background (job ${data.background.jobId}, prompt ${data.background.promptId}). Collect the result with job_output.` }]
+          return [{ type: 'text', text: backgroundText(data.background) }]
         }
         if (data.action === 'refresh') {
           const changed = data.changed ?? []
@@ -646,9 +677,7 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
         }
         const result = data.result
         if (result === undefined) return [{ type: 'text', text: 'ComfyUI workflow run returned no result.' }]
-        const lines = [`ComfyUI workflow ${result.status} (prompt ${result.promptId}) in ${result.elapsedMs} ms — ${summarizeMedia(result.media)}`]
-        for (const item of result.media) lines.push(`  ${item.kind}: ${item.url}`)
-        return [{ type: 'text', text: lines.join('\n') }]
+        return [{ type: 'text', text: renderRunResultText(result) }]
       },
       presentationMeta(_args, value) {
         return value
@@ -805,67 +834,29 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
         throw new Error(`comfyui_workflow: 工作流 "${saved.name}" 标记了运行前必读技能包 — 先调用 action: skill { id: "${saved.id}" } 读完再运行。`)
       }
       const config = runtime.getConfig()
-      const client = runtime.createClient(await runtime.getApiKey())
       const values = typeof args.parameters === 'object' && args.parameters !== null
         ? (args.parameters as Record<string, unknown>)
         : {}
-      const promptId = await runtime.queue(saved.workflow, {
-        workflowName: saved.name,
-        workflowId: saved.id,
-        source: 'workflow-tool',
-        parameters: saved.parameters,
-        values,
-      })
       const mode = args.mode === undefined ? 'sync' : args.mode
       if (mode !== 'sync' && mode !== 'async') {
         throw new Error(`comfyui_workflow: mode must be sync or async, got ${String(mode)}`)
       }
       const waitMs = typeof args.timeout_ms === 'number' ? args.timeout_ms : config.timeoutMs
-      if (mode === 'async') {
-        const jobs = ctx.get('jobs') as JobsService | undefined
-        if (jobs === undefined) {
-          throw new Error('comfyui_workflow: background jobs unavailable — load @deepseek-ai/dsh-jobs-local and @deepseek-ai/dsh-tool-jobs')
-        }
-        const jobId = jobs.start({
-          kind: 'comfyui',
-          label: saved.name,
-          ...(exec.agent !== undefined ? { owner: exec.agent } : {}),
-          run: () => {
-            const startedAt = Date.now()
-            const done = (async () => {
-              try {
-                const entry = await client.waitForCompletion({
-                  promptId,
-                  timeoutMs: waitMs,
-                  pollIntervalMs: config.pollIntervalMs,
-                  signal: new AbortController().signal,
-                })
-                const items = collectMedia({ promptId, entry, maxItems: config.maxMediaItems, proxyBase: runtime.proxyBase() })
-                const result: RunResult = {
-                  kind: 'sync',
-                  promptId,
-                  status: 'completed',
-                  elapsedMs: Date.now() - startedAt,
-                  media: items,
-                  summary: summarizeMedia(items),
-                }
-                return { status: 'completed' as const, output: JSON.stringify(result) }
-              } catch (error) {
-                runtime.untrack(promptId)
-                const message = error instanceof Error ? error.message : String(error)
-                return { status: 'failed' as const, detail: 'comfyui', output: message }
-              }
-            })()
-            return {
-              cancel: () => { void client.interrupt().catch(() => undefined) },
-              done,
-            }
-          },
-        })
-        return { action: 'run', id, workflowName: saved.name, background: { kind: 'background', jobId, promptId, label: saved.name } }
+      const launched = await launch(runtime, ctx, exec, {
+        workflow: saved.workflow,
+        label: saved.name,
+        workflowName: saved.name,
+        workflowId: saved.id,
+        source: 'workflow-tool',
+        parameters: saved.parameters,
+        values,
+        mode,
+        waitMs,
+      })
+      if (launched.kind === 'background') {
+        return { action: 'run', id, workflowName: saved.name, background: launched }
       }
-      const result = await waitSync(runtime, client, promptId, config, exec.signal, waitMs)
-      return { action: 'run', id, workflowName: saved.name, result }
+      return { action: 'run', id, workflowName: saved.name, result: launched }
     },
   }
 }

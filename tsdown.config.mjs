@@ -5,17 +5,21 @@ import { defineConfig } from 'tsdown'
 
 const ID = 'dsh-comfyui'
 
-const PLATFORM_EXTERNALS = [
+// The static module table of the DSH 0.2 web shell (rM() in dsh-web-frontend):
+// exactly these specifiers resolve at runtime without a graph row. Anything
+// else must be inlined — 0.2 dropped dsh-client-web-react, ui-attachment and
+// schema-form from the table, so keeping them external would fail at require.
+// tests/client-bundle.spec.ts pins the built bundle to this list.
+export const PLATFORM_EXTERNALS = [
   'react',
   'react/jsx-runtime',
   'react-dom',
   'react-dom/client',
   '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-web-react',
   '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-ui-attachment',
-  '@deepseek-ai/dsh-client-schema-form',
+  '@deepseek-ai/dsh-client-ui-dockkit',
 ]
 
 export default defineConfig({
