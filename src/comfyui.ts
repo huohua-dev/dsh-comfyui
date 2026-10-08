@@ -97,10 +97,31 @@ export interface ComfyViewStream {
 
 /** Failure talking to the ComfyUI server. */
 export class ComfyUIError extends Error {
-  constructor(message: string, readonly status?: number) {
+  constructor(message: string, readonly status?: number, readonly code?: 'unreachable') {
     super(message)
     this.name = 'ComfyUIError'
   }
+}
+
+/** Short description of a network-level fetch failure (undici puts the errno on `cause`). */
+function networkReason(error: unknown, timeoutMs: number, timedOut: boolean): string {
+  if (timedOut) return `${timeoutMs} ms 内没有响应`
+  const cause = (error as { cause?: { code?: unknown; message?: unknown } } | undefined)?.cause
+  const code = typeof cause?.code === 'string' ? cause.code : undefined
+  const known: Record<string, string> = {
+    ECONNREFUSED: '连接被拒绝',
+    ECONNRESET: '连接被重置',
+    EHOSTUNREACH: '主机不可达',
+    ENETUNREACH: '网络不可达',
+    ETIMEDOUT: '连接超时',
+    ENOTFOUND: '域名解析失败',
+    EAI_AGAIN: '域名解析失败',
+    UND_ERR_CONNECT_TIMEOUT: '连接超时',
+    UND_ERR_SOCKET: '连接中断',
+  }
+  if (code !== undefined) return `${known[code] ?? '网络错误'}（${code}）`
+  const message = typeof cause?.message === 'string' ? cause.message : error instanceof Error ? error.message : String(error)
+  return message
 }
 
 function sleep(millis: number, signal: AbortSignal): Promise<void> {
@@ -155,7 +176,33 @@ export class ComfyUIClient {
     private readonly apiKey: string | undefined,
     private readonly connectTimeoutMs: number,
     private readonly maxMediaBytes: number,
+    /** Appended to "cannot reach ComfyUI" errors (configurable, e.g. how to bring the server up). */
+    private readonly unreachableHint: string = '',
   ) {}
+
+  /**
+   * fetch() that turns network-level failures (refused, unreachable, our own
+   * timeout) into one actionable error naming the server and the configured
+   * hint. HTTP error statuses pass through untouched — the server answered.
+   */
+  private async reach(url: string, init: RequestInit): Promise<Response> {
+    try {
+      return await fetch(url, init)
+    } catch (error) {
+      const signal = init.signal ?? undefined
+      const timedOut = signal?.aborted === true && (signal.reason as { name?: string } | undefined)?.name !== 'JobCancelledError'
+      throw this.unreachable(error, timedOut)
+    }
+  }
+
+  private unreachable(error: unknown, timedOut: boolean): ComfyUIError {
+    const hint = this.unreachableHint.trim()
+    return new ComfyUIError(
+      `无法连接 ComfyUI（${this.base()}）：${networkReason(error, this.connectTimeoutMs, timedOut)}。${hint !== '' ? hint : '请确认 ComfyUI 已启动、地址可达'}`,
+      undefined,
+      'unreachable',
+    )
+  }
 
   private base(): string {
     return this.baseUrl.replace(/\/+$/, '')
@@ -169,14 +216,14 @@ export class ComfyUIClient {
   /** fetch() one route, retrying a 404 under /api until the prefix is known. */
   private async fetchRoute(path: string, init: RequestInit): Promise<Response> {
     const base = this.base()
-    const response = await fetch(this.endpoint(path), init)
+    const response = await this.reach(this.endpoint(path), init)
     if (path.startsWith('/api/') || routePrefix.has(base)) return response
     if (response.ok) {
       routePrefix.set(base, '')
       return response
     }
     if (response.status !== 404) return response
-    const retry = await fetch(`${base}/api${path}`, init)
+    const retry = await this.reach(`${base}/api${path}`, init)
     if (!retry.ok) {
       await retry.body?.cancel()
       return response

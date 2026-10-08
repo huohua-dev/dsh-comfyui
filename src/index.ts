@@ -173,7 +173,7 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
   const runtime: ComfyUIRuntime = {
     getConfig: () => resolved,
     getApiKey: () => resolveApiKey(ctx, resolved.apiKeyEnv),
-    createClient: (apiKey) => new ComfyUIClient(resolved.baseUrl, apiKey, resolved.connectTimeoutMs, resolved.maxMediaBytes),
+    createClient: (apiKey) => new ComfyUIClient(resolved.baseUrl, apiKey, resolved.connectTimeoutMs, resolved.maxMediaBytes, resolved.unreachableHint),
     hostHint,
     archive,
     // Media URLs are same-origin relative paths since 0.6.0: the card renders
