@@ -17,6 +17,7 @@ import { refreshParameterMetadata, type Workflow, type WorkflowParameter } from 
 import type { HostHint } from './host-hint.js'
 import { SKILL_MAIN, joinFrontmatter, type WorkflowSkillPacks } from './skillpack.js'
 import { ownerSessionOf, startGenerationJob, type JobsService } from './jobs.js'
+import { describeParameters, draftForSave, draftForUpdate, type RunRecord } from './library.js'
 
 /** A workflow saved on the ComfyUI server (userdata/workflows), with extract status. */
 export interface ComfyUIComfyWorkflow {
@@ -77,6 +78,12 @@ export interface ComfyUIRuntime {
   }): Promise<{ ok: true; workflow: StoredWorkflow } | { ok: false; error: string }>
   /** Delete a workflow from the library; false when it did not exist. */
   deleteWorkflow(id: string): Promise<boolean>
+  /** What a submitted run left behind (local archive record first, then
+   * ComfyUI's history): the exact prompt, its parameter definitions and the
+   * values used. Undefined when neither knows the prompt. */
+  runRecord(promptId: string): Promise<RunRecord | undefined>
+  /** Node definitions, cached briefly; undefined when the server is unreachable. */
+  objectInfo(): Promise<Record<string, unknown> | undefined>
   /** Per-workflow skill packs (SKILL.md bundles under `<dataDir>/skills/`). */
   skillPacks: WorkflowSkillPacks
   /** Force TTS-Audio-Suite to rescan its voice library (best-effort; false
@@ -601,18 +608,26 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
       'It also lists workflows the user saved on the ComfyUI server (衍生主题: UI graph format canvases). A graph may hold SEVERAL independent flows; each is extracted into its own runnable workflow in the panel (整体/按分量/主流程). A graph with no extracted workflow yet cannot run — tell the user to open the ComfyUI panel and 提取 it first.',
       '`action: run` runs one saved workflow by id — pass only the id plus parameter overrides; the plugin submits the saved workflow JSON itself (never copy the JSON into your reply). It waits for media by default; add `mode: "async"` to run in the background and collect the result with job_output.',
       '`action: get` returns one saved workflow\'s complete API-format JSON by id for inspection/diagnostics only — it consumes many tokens and is not the run path.',
+      '`action: save` stores a workflow in the library so it can be listed and run by id later — from exactly one of `prompt_id` (a run you just made: keeps its exact graph and named parameters, the values it used become defaults, random seeds stay random), `template` (built-in id such as h3_t2v) or `workflow` (API JSON; parameters auto-detected). Needs `name`; `description` says when to use it; `parameters` sets defaults by name (giving a seed pins it). Use this when the user says 存成模板 / 保存这个工作流.',
+      '`action: update` changes a saved workflow by `id`: new `name` / `description` / `tags`, `parameters` as new defaults by name, or a replacement `workflow` (parameters whose node input still exists are kept). `action: delete` removes one by `id` (its skill pack directory, if any, stays on disk).',
       '`action: refresh` re-derives one saved workflow\'s parameter snapshot (options / numberKind / min/max/step) from the current node definitions and saves it back. Run it after the TTS-Audio-Suite voice library or node definitions changed: saved workflows snapshot their parameter options at save time, so a freshly added voice is not accepted by `action: run` until the snapshot catches up. It force-rescans the TTS voice library first, then updates only the fields derived from object_info — the parameter set (including user-added advanced parameters) is preserved. Returns `changed` with the parameter names that actually changed.',
     ].join(' '),
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['list', 'run', 'get', 'refresh'], description: 'list returns the workflow library; run executes one workflow by id (direct call to the saved JSON); get returns one workflow\'s full JSON for inspection; refresh re-derives one workflow\'s parameter snapshot from the current node definitions and saves it back.' },
-        id: { type: 'string', description: 'Workflow id (required for action: run and get).' },
+        action: { type: 'string', enum: ['list', 'run', 'save', 'update', 'delete', 'skill', 'get', 'refresh'], description: 'list the library; run one by id; save / update / delete library entries; skill reads a workflow\'s skill pack; get returns full JSON (diagnostics only); refresh re-derives a parameter snapshot.' },
+        id: { type: 'string', description: 'Workflow id (run, update, delete, skill, get, refresh).' },
+        name: { type: 'string', description: 'Workflow name for save (required) and update.' },
+        description: { type: 'string', description: 'What the workflow does / when to use it (save, update).' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags (save, update).' },
+        prompt_id: { type: 'string', description: 'save: the prompt id of a finished run to save as a reusable workflow.' },
+        template: { type: 'string', enum: TEMPLATES.map((t) => t.id), description: 'save: built-in template id to save into the library.' },
+        workflow: { type: 'object', description: 'save / update: API-format workflow JSON.' },
         mode: { type: 'string', enum: ['sync', 'async'], description: 'run mode (default sync); async starts a background job and returns its id for job_output. Video/audio workflows should use async — generation takes minutes and sync may time out.' },
         timeout_ms: { type: 'number', minimum: 5_000, maximum: 3_600_000, description: 'Generation wait budget in ms (default 900000 = 15 min). Video needs minutes; raise this for long videos.' },
         parameters: {
           type: 'object',
-          description: 'Optional per-run values for the workflow\'s adjustable parameters (see the workflow\'s `inputs` note from action: list — e.g. {"prompt": "a red cat", "seed": 42}). Omitted parameters keep their defaults; seed-type parameters randomize when the workflow marks them 随机.',
+          description: 'run: per-run values for the workflow\'s parameters (e.g. {"prompt": "a red cat", "seconds": 5}); omitted ones keep their defaults, seeds marked 随机 randomize. save / update: new default values by parameter name.',
         },
       },
       required: ['action'],
@@ -625,6 +640,7 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
           env?: { baseUrl: string; comfyuiDirs: string[] }
           workflows?: Array<{ id: string; name: string; description: string; skill?: { summary: string; files: number; required: boolean }; parameters?: Array<{ name: string; label?: string; type?: string; default?: string | number | boolean; random?: boolean; numberKind?: 'int' | 'float'; options?: Array<string | number>; upload?: 'image' | 'video' | 'audio' | 'media'; subfolder?: string }> }>
           comfyuiWorkflows?: Array<{ name: string; extracted: boolean; derived: Array<{ libraryId: string; name: string }> }>
+          templates?: Array<{ id: string; name: string; parameters: string }>
           loadArea?: { slots: number; loaded: number; items: Array<{ name: string; kind: string; source: string }> }
           result?: RunResult
           id?: string
@@ -633,6 +649,8 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
           background?: BackgroundResult
           changed?: string[]
           parameterCount?: number
+          parameterSummary?: string
+          keptSkillPack?: boolean
           skill?: { workflowName: string; summary: string; body: string; resourceBase: string; files: string[] }
         }
         if (data.action === 'skill') {
@@ -662,6 +680,12 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
         }
         if (data.action === 'get') {
           return [{ type: 'text', text: `ComfyUI workflow ${data.name ?? data.id}: ${JSON.stringify(data.workflow)}` }]
+        }
+        if (data.action === 'save' || data.action === 'update') {
+          return [{ type: 'text', text: `${data.action === 'save' ? '已保存到工作流库' : '已更新工作流'}：${data.name}（id ${data.id}）。默认参数：${data.parameterSummary ?? '（无）'}。运行：comfyui_workflow { action: "run", id: "${data.id}", parameters: {…}, mode: "async" }` }]
+        }
+        if (data.action === 'delete') {
+          return [{ type: 'text', text: `已从工作流库删除：${data.name}（id ${data.id}）${data.keptSkillPack === true ? '；它的技能包目录仍保留在磁盘上（面板里可彻底删除）' : ''}` }]
         }
         if (data.background !== undefined) {
           return [{ type: 'text', text: backgroundText(data.background) }]
@@ -707,6 +731,9 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
               lines.push(`  ${index + 1}. ${item.name}（${item.kind}）`)
             }
           }
+          for (const template of data.templates ?? []) {
+            lines.push(`内置模板 ${template.id} — ${template.name}：comfyui_run { template: "${template.id}", parameters: {…}, mode: "async" }，参数 ${template.parameters}；要存进库用 action: save { template: "${template.id}", name }`)
+          }
           const comfyui = data.comfyuiWorkflows ?? []
           if (comfyui.length > 0) {
             lines.push(`ComfyUI 端保存的图工作流（${comfyui.length} 个，UI 图格式，不能直接运行）:`)
@@ -731,8 +758,48 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
     timeoutMs: TOOL_TIMEOUT_MS,
     async execute(args, exec) {
       const action = args.action
-      if (action !== 'list' && action !== 'run' && action !== 'get' && action !== 'refresh' && action !== 'skill') {
-        throw new Error(`comfyui_workflow: action must be list, run, skill, get, or refresh, got ${String(action)}`)
+      if (action !== 'list' && action !== 'run' && action !== 'get' && action !== 'refresh' && action !== 'skill'
+        && action !== 'save' && action !== 'update' && action !== 'delete') {
+        throw new Error(`comfyui_workflow: action must be list, run, save, update, delete, skill, get, or refresh, got ${String(action)}`)
+      }
+      const tagsOf = (value: unknown): string[] | undefined =>
+        Array.isArray(value) ? value.filter((tag): tag is string => typeof tag === 'string') : undefined
+      if (action === 'save') {
+        const name = typeof args.name === 'string' ? args.name.trim() : ''
+        if (name === '') throw new Error('comfyui_workflow: save needs a name')
+        let run: RunRecord | undefined
+        if (args.prompt_id !== undefined) {
+          if (typeof args.prompt_id !== 'string' || args.prompt_id === '') throw new Error('comfyui_workflow: prompt_id must be a non-empty string')
+          run = await runtime.runRecord(args.prompt_id)
+          if (run === undefined) {
+            throw new Error(`comfyui_workflow: 找不到 prompt ${args.prompt_id} 的运行记录（本地归档和 ComfyUI history 都没有）`)
+          }
+        }
+        let draft
+        try {
+          draft = draftForSave({
+            ...(args.workflow !== undefined ? { workflow: args.workflow } : {}),
+            ...(args.template !== undefined ? { template: args.template } : {}),
+            ...(run !== undefined ? { run } : {}),
+            ...(args.parameters !== undefined ? { defaults: args.parameters } : {}),
+            objectInfo: run === undefined && args.workflow !== undefined ? await runtime.objectInfo() : undefined,
+          })
+        } catch (error) {
+          throw new Error(`comfyui_workflow: save failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        const description = typeof args.description === 'string'
+          ? args.description
+          : run !== undefined ? `从运行 ${String(args.prompt_id)}${run.workflowName ? `（${run.workflowName}）` : ''} 保存` : ''
+        const result = await runtime.saveWorkflow({
+          name,
+          description,
+          workflow: draft.workflow,
+          parameters: draft.parameters,
+          ...(tagsOf(args.tags) !== undefined ? { tags: tagsOf(args.tags) } : {}),
+          source: 'user',
+        })
+        if (!result.ok) throw new Error(`comfyui_workflow: save failed: ${result.error}`)
+        return { action: 'save', id: result.workflow.id, name: result.workflow.name, parameterSummary: describeParameters(draft.parameters) }
       }
       if (action === 'list') {
         const [workflows, comfyui, slots] = await Promise.all([
@@ -798,15 +865,50 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
             updatedAt,
           })),
           comfyuiWorkflows: comfyui.map(({ name, extracted, derived }) => ({ name, extracted, derived })),
+          // Built-in templates that run by named parameters (comfyui_run template).
+          templates: TEMPLATES.filter((template) => template.parameters !== undefined).map((template) => ({
+            id: template.id,
+            name: template.name,
+            parameters: describeParameters(template.parameters ?? []),
+          })),
         }
       }
       const id = args.id
       if (typeof id !== 'string' || id === '') {
-        throw new Error('comfyui_workflow: id is required for action: run, get, refresh and skill')
+        throw new Error('comfyui_workflow: id is required for action: run, update, delete, get, refresh and skill')
       }
       const saved = await runtime.getWorkflow(id)
       if (saved === undefined) {
         throw new Error(`comfyui_workflow: workflow "${id}" not found — run action: list first`)
+      }
+      if (action === 'delete') {
+        const removed = await runtime.deleteWorkflow(saved.id)
+        if (!removed) throw new Error(`comfyui_workflow: workflow "${id}" not found`)
+        return { action: 'delete', id: saved.id, name: saved.name, keptSkillPack: saved.skillDir !== undefined }
+      }
+      if (action === 'update') {
+        let draft
+        try {
+          draft = draftForUpdate({ workflow: saved.workflow, parameters: saved.parameters ?? [] }, {
+            ...(args.workflow !== undefined ? { workflow: args.workflow } : {}),
+            ...(args.parameters !== undefined ? { defaults: args.parameters } : {}),
+            objectInfo: args.workflow !== undefined ? await runtime.objectInfo() : undefined,
+          })
+        } catch (error) {
+          throw new Error(`comfyui_workflow: update failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        const result = await runtime.saveWorkflow({
+          id: saved.id,
+          name: typeof args.name === 'string' && args.name.trim() !== '' ? args.name.trim() : saved.name,
+          description: typeof args.description === 'string' ? args.description : saved.description,
+          workflow: draft.workflow,
+          parameters: draft.parameters,
+          tags: tagsOf(args.tags) ?? saved.tags,
+          source: saved.source,
+          comfyuiFile: saved.comfyuiFile,
+        })
+        if (!result.ok) throw new Error(`comfyui_workflow: update failed: ${result.error}`)
+        return { action: 'update', id: saved.id, name: result.workflow.name, parameterSummary: describeParameters(draft.parameters) }
       }
       if (action === 'get') {
         return {

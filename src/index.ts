@@ -243,6 +243,14 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
       return client.getOk('/api/tts-audio-suite/voice-library?refresh=1', 20_000)
     },
     deleteWorkflow: (id) => store.deleteWorkflow(id),
+    runRecord: async (promptId) => {
+      const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
+      const entry = await client.getHistory(promptId).catch(() => undefined)
+      const prompt = Array.isArray(entry?.prompt) ? (entry.prompt as unknown[])[2] : undefined
+      if (typeof prompt !== 'object' || prompt === null) return undefined
+      return { workflow: prompt as Workflow }
+    },
+    objectInfo: async () => objectInfoCached(runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))),
     skillPacks,
     listMediaSizes: () => store.loadMediaSizes(),
     saveMediaSize: (name, size) => store.saveMediaSize(name, size),

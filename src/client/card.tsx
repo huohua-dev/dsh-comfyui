@@ -310,6 +310,11 @@ type WorkflowMeta = {
   action: 'get'
   id?: string
   name?: string
+} | {
+  action: 'save' | 'update' | 'delete'
+  id?: string
+  name?: string
+  parameterSummary?: string
 }
 
 function SettledCard({ block, t }: { block: ToolResultNode; t: ComfyUICardProps['t'] }): ReturnType<typeof h> {
@@ -341,6 +346,18 @@ function SettledCard({ block, t }: { block: ToolResultNode; t: ComfyUICardProps[
       return h('div', { className: 'dsc-card' },
         h('div', { className: 'dsc-card-head' }, h('span', { className: 'dsc-badge' }, 'comfyui_workflow')),
         h('div', { className: 'dsc-meta' }, t('cardListed', { runs, graphs })),
+      )
+    }
+    if (meta.action === 'save' || meta.action === 'update' || meta.action === 'delete') {
+      const label = meta.action === 'save' ? t('cardSaved') : meta.action === 'update' ? t('cardUpdated') : t('cardDeleted')
+      return h('div', { className: 'dsc-card' },
+        h('div', { className: 'dsc-card-head' },
+          h('span', { className: meta.action === 'delete' ? 'dsc-badge' : 'dsc-badge dsc-badge--ok' }, label),
+          h('span', { className: 'dsc-meta' }, `${meta.name ?? ''} · ${meta.id ?? ''}`),
+        ),
+        meta.parameterSummary !== undefined && meta.parameterSummary !== ''
+          ? h('div', { className: 'dsc-meta' }, meta.parameterSummary)
+          : null,
       )
     }
     if (meta.action === 'get') {
