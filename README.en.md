@@ -16,11 +16,12 @@
   <img src="https://img.shields.io/npm/l/dsh-comfyui" alt="license" />
 </p>
 
-> **This repository is a fork (huohua-dev) of [fandc520/dsh-comfyui](https://github.com/fandc520/dsh-comfyui) 0.5.4; from 0.6.0 it targets DeepSeek Harness 0.2.0-rc.2 only.**
+> **This repository is a fork (huohua-dev) of [fandc520/dsh-comfyui](https://github.com/fandc520/dsh-comfyui) 0.5.4; from 0.6.0 it targets the DeepSeek Harness 0.2 line.**
 >
 > | dsh-comfyui | Paired DeepSeek Harness |
 > | --- | --- |
-> | **0.6.x (this fork, `dist` branch)** | **0.2.0-rc.2** (peer pinned; no allow-version exemption needed) |
+> | **0.6.3+ (this fork, `dist` branch)** | **0.2.x** (`@deepseek-ai/dsh-settings` peer is `^0.2.0-rc.2`, verified on 0.2.0-rc.2 and 0.2.1-rc.1; no allow-version exemption needed) |
+> | 0.6.0–0.6.2 (this fork) | 0.2.0-rc.2 (peer pinned to that version, so the host refuses the install on 0.2.1-rc.1) |
 > | 0.5.x (upstream npm) | 0.1.2 – 0.1.7 |
 >
 > Install (desktop profile, restart DSH afterwards):

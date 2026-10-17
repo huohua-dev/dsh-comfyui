@@ -8,7 +8,7 @@
 
 - 包名 `dsh-comfyui`，ESM（`"type": "module"`），Node ≥ 22.19，MIT。
 - 入口：host 侧 `lib/index.js`（由 `src/*.ts` 经 tsc 编译）；浏览器侧 `client/client.js`（由 `src/client/*` 经 tsdown 打包）。
-- peer 依赖：`@deepseek-ai/cordis`（`^4.0.1`）、`@deepseek-ai/dsh-settings`（**写死 `0.2.0-rc.2`**）。本仓库是上游 fandc520/dsh-comfyui 0.5.4 的 fork，0.6.0 起只适配 DSH 0.2.0-rc.2：宿主按 `semver.satisfies(运行版本, range, { includePrerelease: true })` 检查每个 `@deepseek-ai/dsh*` peer，不满足就拒装（除非 allow-version 豁免——我们不依赖豁免，`tests/compat.spec.ts` 用同一规则守住）。运行时依赖 `@deepseek-ai/schemastery`、`fflate`。
+- peer 依赖：`@deepseek-ai/cordis`（`^4.0.1`）、`@deepseek-ai/dsh-settings`（`^0.2.0-rc.2`，即整条 0.2 线）。本仓库是上游 fandc520/dsh-comfyui 0.5.4 的 fork，0.6.0 起只适配 DSH 0.2 线：宿主按 `semver.satisfies(运行版本, range, { includePrerelease: true })` 检查每个 `@deepseek-ai/dsh*` peer，不满足就拒装（除非 allow-version 豁免——我们不依赖豁免，`tests/compat.spec.ts` 用同一规则守住）。**dsh peer 写 range，绝不写单版本 pin**：0.6.2 把 `dsh-settings` 写死 `0.2.0-rc.2`，DSH 升到 0.2.1-rc.1 后宿主直接拒装（0.6.3 修正）。`tests/compat.spec.ts` 有两条守卫：peer 必须是 range（不得回退成 pin）、devDependencies 里的宿主版本必须落在 peer 范围内；新增宿主版本时改 `SUPPORTED_HOSTS` 与 devDependencies。运行时依赖 `@deepseek-ai/schemastery`、`fflate`。
 - `cordis.patch.yml` 把插件以 `id: comfyui` 插入 profile 层栈；`package.json` 的 `dsh` 字段声明 bundle patch 与 client 平台/注入。
 
 ## 常用命令

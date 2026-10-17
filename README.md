@@ -16,11 +16,12 @@
   <img src="https://img.shields.io/npm/l/dsh-comfyui" alt="license" />
 </p>
 
-> **本仓库是 [fandc520/dsh-comfyui](https://github.com/fandc520/dsh-comfyui) 0.5.4 的 fork（huohua-dev），0.6.0 起只适配 DeepSeek Harness 0.2.0-rc.2。**
+> **本仓库是 [fandc520/dsh-comfyui](https://github.com/fandc520/dsh-comfyui) 0.5.4 的 fork（huohua-dev），0.6.0 起只适配 DeepSeek Harness 0.2 系列。**
 >
 > | dsh-comfyui | 配对的 DeepSeek Harness |
 > | --- | --- |
-> | **0.6.x（本 fork，`dist` 分支）** | **0.2.0-rc.2**（peer 依赖写死该版本，无需 allow-version 豁免） |
+> | **0.6.3+（本 fork，`dist` 分支）** | **0.2.x**（`@deepseek-ai/dsh-settings` peer 为 `^0.2.0-rc.2`，已在 0.2.0-rc.2 与 0.2.1-rc.1 上验证，无需 allow-version 豁免） |
+> | 0.6.0–0.6.2（本 fork） | 0.2.0-rc.2（peer 写死该版本，装到 0.2.1-rc.1 会被宿主拒装） |
 > | 0.5.x（上游 npm） | 0.1.2 – 0.1.7 |
 >
 > 安装（desktop profile，装完需重启 DSH）：

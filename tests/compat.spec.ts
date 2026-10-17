@@ -1,9 +1,13 @@
 /**
- * DSH 0.2.0-rc.2 compatibility of the package manifest and the client bundle.
+ * DSH 0.2 compatibility of the package manifest and the client bundle.
  * The peer check mirrors dsh-app-boot's evaluatePluginCompatibility: every
  * `@deepseek-ai/dsh*` peer must accept the running version with
  * `includePrerelease`, otherwise install/boot refuses the plugin unless an
  * allow-version exemption exists (which we must not need).
+ *
+ * Host releases we build and boot against. A hard pin here is what made
+ * 0.6.2 uninstallable on DSH 0.2.1-rc.1, so the dsh peers carry a range and
+ * every host release we test is listed below.
  */
 import { readFileSync, existsSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
@@ -15,10 +19,14 @@ import { PLATFORM_EXTERNALS } from '../tsdown.config.mjs'
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
   version: string
   peerDependencies: Record<string, string>
+  devDependencies: Record<string, string>
   dsh: { client: { platform: string; inject: string[] } }
 }
 
-/** Same rule as dsh-app-boot evaluatePluginCompatibility (0.2.0-rc.2). */
+/** DSH host releases this plugin is verified against. */
+const SUPPORTED_HOSTS = ['0.2.0-rc.2', '0.2.1-rc.1']
+
+/** Same rule as dsh-app-boot evaluatePluginCompatibility (0.2 line). */
 function incompatiblePeers(peers: Record<string, string>, runtime: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [name, range] of Object.entries(peers)) {
@@ -29,16 +37,42 @@ function incompatiblePeers(peers: Record<string, string>, runtime: string): Reco
 }
 
 describe('package manifest', () => {
-  it('passes the host peer check on 0.2.0-rc.2 without an exemption', () => {
-    expect(incompatiblePeers(pkg.peerDependencies, '0.2.0-rc.2')).toEqual({})
+  it.each(SUPPORTED_HOSTS)('passes the host peer check on %s without an exemption', (host) => {
+    expect(incompatiblePeers(pkg.peerDependencies, host)).toEqual({})
+  })
+
+  it('declares dsh peers as a range, never a single-version pin', () => {
+    // A pin turns every host patch release into a hard install refusal on a
+    // plugin whose API surface did not change (that is exactly how 0.6.2 was
+    // rejected by DSH 0.2.1-rc.1).
+    for (const [name, range] of Object.entries(pkg.peerDependencies)) {
+      if (name !== '@deepseek-ai/dsh' && !name.startsWith('@deepseek-ai/dsh-')) continue
+      expect(semver.validRange(range), `${name} peer range`).not.toBeNull()
+      expect(range, `${name} peer range`).toMatch(/[\^~><=| ]|\|\|/)
+    }
+  })
+
+  it('builds and tests against the newest host it accepts', () => {
+    const tested = pkg.devDependencies['@deepseek-ai/dsh-settings']!
+    expect(Object.keys(incompatiblePeers(pkg.peerDependencies, tested))).toEqual([])
   })
 
   it('pins dsh peers to the 0.2 line (0.1 hosts are rejected loudly, not half-working)', () => {
-    expect(Object.keys(incompatiblePeers(pkg.peerDependencies, '0.1.7-alpha.1'))).toContain('@deepseek-ai/dsh-settings')
+    for (const host of ['0.1.7-alpha.1', '0.1.7-rc.2', '0.1.6-alpha.2']) {
+      expect(Object.keys(incompatiblePeers(pkg.peerDependencies, host))).toContain('@deepseek-ai/dsh-settings')
+    }
+  })
+
+  it('stops at the 0.2 line (an unvetted 0.3 host is refused, not guessed at)', () => {
+    expect(Object.keys(incompatiblePeers(pkg.peerDependencies, '0.3.0-alpha.1'))).toContain('@deepseek-ai/dsh-settings')
   })
 
   it('keeps cordis on the 4.x host line', () => {
-    expect(semver.satisfies('4.0.4', pkg.peerDependencies['@deepseek-ai/cordis']!)).toBe(true)
+    const range = pkg.peerDependencies['@deepseek-ai/cordis']!
+    for (const version of ['4.0.1', '4.0.4', '4.0.5']) {
+      expect(semver.satisfies(version, range), version).toBe(true)
+    }
+    expect(semver.satisfies('5.0.0', range)).toBe(false)
   })
 
   it('declares only client inject packages that exist in 0.2 and own the slots we use', () => {
