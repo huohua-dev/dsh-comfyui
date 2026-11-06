@@ -796,6 +796,12 @@ for (const where of ['pending', 'running']) {
     disposeAll(stub.disposers)
     rmSync(cancelDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
+  // `done` settles as soon as the job is killed, but the aborted work is still
+  // unwinding: it records the cancelled run in the archive on its way out,
+  // which would re-create the directory the finally block just removed. Give
+  // it a moment, then sweep again so no temp directory survives the run.
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  rmSync(cancelDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 }
 globalThis.fetch = realFetch
 
