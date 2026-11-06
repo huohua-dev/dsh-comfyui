@@ -18,13 +18,14 @@ import { PLATFORM_EXTERNALS } from '../tsdown.config.mjs'
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
   version: string
+  engines: { node: string; dsh?: string }
   peerDependencies: Record<string, string>
   devDependencies: Record<string, string>
   dsh: { client: { platform: string; inject: string[] } }
 }
 
 /** DSH host releases this plugin is verified against. */
-const SUPPORTED_HOSTS = ['0.2.0-rc.2', '0.2.1-rc.1']
+const SUPPORTED_HOSTS = ['0.2.0-rc.2', '0.2.1-rc.1', '0.2.1-rc.2']
 
 /** Same rule as dsh-app-boot evaluatePluginCompatibility (0.2 line). */
 function incompatiblePeers(peers: Record<string, string>, runtime: string): Record<string, string> {
@@ -73,6 +74,22 @@ describe('package manifest', () => {
       expect(semver.satisfies(version, range), version).toBe(true)
     }
     expect(semver.satisfies('5.0.0', range)).toBe(false)
+  })
+
+  it('declares engines.dsh in step with the dsh-settings peer', () => {
+    // dsh 0.2.1+ reads engines.dsh ALONE and ignores peerDependencies; older
+    // hosts read the peer only. Both must accept exactly the same hosts, or
+    // the plugin installs on one host and refuses on another.
+    const range = pkg.engines?.dsh
+    expect(range, 'engines.dsh').toBeDefined()
+    for (const host of SUPPORTED_HOSTS) {
+      expect(semver.satisfies(host, range!, { includePrerelease: true }), host).toBe(true)
+      expect(Object.keys(incompatiblePeers(pkg.peerDependencies, host)), host).toEqual([])
+    }
+    // The 0.1 line is out of scope for this fork — engines.dsh must say so.
+    for (const host of ['0.1.7-alpha.1', '0.1.6-alpha.2', '0.3.0-alpha.1']) {
+      expect(semver.satisfies(host, range!, { includePrerelease: true }), host).toBe(false)
+    }
   })
 
   it('declares only client inject packages that exist in 0.2 and own the slots we use', () => {

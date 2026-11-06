@@ -12,6 +12,7 @@ import { ComfyUITrigger, type ComfyUITriggerProps } from './trigger.tsx'
 import { injectStyles } from './styles.ts'
 import { TurnMediaTail, type TurnMediaTailProps } from './turn-tail.tsx'
 import { turnMediaDefinition, TURN_MEDIA_KIND } from './turn-media.ts'
+import { installInlineMedia } from './inline-media.ts'
 
 export const name = 'dsh-comfyui'
 export const inject = ['slots']
@@ -37,6 +38,11 @@ export function apply(ctx: ComfyUIClientContext): void {
   // the host locale, so zh/en switching works without a host change.
   const t = makeT(getLang())
   ctx.effect(() => injectStyles(), 'dsh-comfyui: styles')
+  // Video/audio the model pastes into its reply can only be a link (dsh's chat
+  // Markdown has no media syntax), so a native player is inserted after each
+  // same-origin /comfyui/media link. The turn-tail wall covers the plugin's
+  // own cards; this covers prose links in the reply.
+  ctx.effect(() => installInlineMedia(), 'dsh-comfyui: inline video/audio players')
 
   ctx.slots.inject('tool.call.toolview', () => ctx.slots.register(
     { name: 'tool.call.toolview', key: 'comfyui_run' },

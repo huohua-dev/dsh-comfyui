@@ -127,3 +127,58 @@ describe('comfyui_workflow save → list → run → update → delete', () => {
     await expect(host.call('comfyui_workflow', { action: 'save', template: 'h3_t2v' })).rejects.toThrow(/needs a name/)
   })
 })
+
+/**
+ * The run has to explain itself (upstream 0.5.5): which prompt was really
+ * submitted, and a parameter name that does not exist must stop the run
+ * instead of silently falling back to the saved default.
+ */
+describe('the run explains itself', () => {
+  let comfy: FakeComfy
+  let host: FakeHost
+  beforeEach(async () => {
+    comfy = await startFakeComfy()
+    host = await bootPlugin({ baseUrl: comfy.url, pollIntervalMs: 50 })
+  })
+  afterEach(async () => {
+    await host.dispose()
+    await comfy.close()
+  })
+
+  /** Run sync and let the fake server finish the prompt while the call waits. */
+  async function runSync(parameters: Record<string, unknown>): Promise<{ kind: string; prompts?: Array<{ name: string; text: string; passed: boolean }>; report?: string }> {
+    const pending = host.call('comfyui_run', { template: 'h3_t2v', parameters, mode: 'sync' })
+    await delay(60)
+    comfy.startNext()
+    comfy.finishRunning()
+    return await pending as { kind: string; prompts?: Array<{ name: string; text: string; passed: boolean }>; report?: string }
+  }
+
+  it('names the prompt that was actually submitted', async () => {
+    const result = await runSync({ prompt: '海边日落，海鸥叫声', seconds: 3 })
+    expect(result.prompts).toEqual([{ name: 'prompt', text: '海边日落，海鸥叫声', passed: true }])
+    expect(result.report).toContain('Prompt used (prompt): "海边日落，海鸥叫声"')
+    expect(result.report).toContain('这就是最终结果')
+  })
+
+  it('flags a prompt that silently came from the saved default', async () => {
+    const saved = await host.call('comfyui_workflow', { action: 'save', template: 'h3_t2v', name: 'H3 默认提示词', parameters: { prompt: '默认的海面' } }) as { id: string }
+    // No `parameters` at all: the saved default is used, and the result says so.
+    const pending = host.call('comfyui_workflow', { action: 'run', id: saved.id, mode: 'sync' })
+    await delay(60)
+    comfy.startNext()
+    comfy.finishRunning()
+    const result = await pending as { result?: { prompts?: Array<{ name: string; text: string; passed: boolean }>; report?: string } }
+    expect(result.result?.prompts).toEqual([{ name: 'prompt', text: '默认的海面', passed: false }])
+    expect(result.result?.report).toContain('Prompt used (prompt, default — not passed): "默认的海面"')
+  })
+
+  it('refuses an unknown parameter name instead of running the default', async () => {
+    const saved = await host.call('comfyui_workflow', { action: 'save', template: 'h3_t2v', name: 'H3 竖屏', parameters: { prompt: 'x' } }) as { id: string }
+    comfy.log.length = 0
+    await expect(host.call('comfyui_workflow', { action: 'run', id: saved.id, parameters: { promt: 'typo' } }))
+      .rejects.toThrow(/不是工作流/)
+    // Nothing was submitted — the typo did not fall through to the default.
+    expect(comfy.log.filter((entry) => entry.path === '/prompt')).toHaveLength(0)
+  })
+})

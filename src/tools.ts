@@ -198,6 +198,45 @@ export interface RunMediaItem {
   localPath?: string
 }
 
+/** One prompt-type parameter of a saved-workflow run, as actually submitted. */
+export interface PromptUsed {
+  name: string
+  text: string
+  /** false = the caller did not pass it, so the saved default was used. */
+  passed: boolean
+}
+
+/**
+ * The role of a parameter: the positive prompt ('write'), the negative one
+ * ('negative'), or neither. Detected from the auto-detected `prompt`,
+ * `prompt_2`, … names (label 提示词) or any string parameter whose name or
+ * label says prompt.
+ */
+function promptRole(param: { name: string; label?: string; type?: string; upload?: string }): 'write' | 'negative' | undefined {
+  if (param.type !== 'string' || param.upload !== undefined) return undefined
+  const label = param.label ?? ''
+  if (!/prompt/i.test(param.name) && !/提示/.test(label)) return undefined
+  return /negative|neg_|负面|反向/i.test(`${param.name} ${label}`) ? 'negative' : 'write'
+}
+
+/**
+ * The prompt-type parameters of a run, as actually submitted. This is what
+ * makes a silent default visible: a run the caller forgot to give a prompt
+ * shows up as "default — not passed", so the agent can tell that the subject
+ * on screen is not the one the user asked for.
+ */
+function promptsUsed(parameters: WorkflowParameter[] | undefined, values: Record<string, unknown> | undefined): PromptUsed[] {
+  const used: PromptUsed[] = []
+  for (const param of parameters ?? []) {
+    if (promptRole(param) === undefined) continue
+    const passed = Object.prototype.hasOwnProperty.call(values ?? {}, param.name)
+    const value = passed ? values?.[param.name] : param.default
+    if (typeof value !== 'string' || value === '') continue
+    used.push({ name: param.name, text: value, passed })
+  }
+  return used
+}
+
 /** Synchronous completion result. */
 export interface RunResult {
   kind: 'sync'
@@ -208,6 +247,14 @@ export interface RunResult {
   summary: string
   /** Why the local archive copy is missing (the run itself succeeded). */
   archiveError?: string
+  /** The prompt-type parameters of this run, as actually submitted. */
+  prompts?: PromptUsed[]
+  /**
+   * The model-facing text of this run, carried in the value so a
+   * code-dispatched caller (run_code / PTC mode) reads the same account the
+   * rendered tool output would show — those paths render no tool card.
+   */
+  report?: string
 }
 
 /** Background mode result: collect later with job_output. */
@@ -331,11 +378,20 @@ export function renderRunResultText(result: RunResult): string {
   const lines = [
     `ComfyUI ${result.status} (prompt ${result.promptId}) in ${result.elapsedMs} ms — ${summarizeMedia(result.media)}`,
   ]
+  // The prompt as submitted — so the report names the real subject, and a run
+  // that silently used the saved default (no parameter passed) is visible.
+  for (const used of result.prompts ?? []) {
+    const text = used.text.length > 300 ? `${used.text.slice(0, 300)}…` : used.text
+    lines.push(used.passed
+      ? `Prompt used (${used.name}): "${text}"`
+      : `Prompt used (${used.name}, default — not passed): "${text}"`)
+  }
   for (const item of result.media) {
     lines.push(`  ${item.kind}: ${item.url}${item.localPath !== undefined ? `（已存到本机 ${item.localPath}）` : ''}`)
   }
   if (result.archiveError !== undefined) lines.push(`注意：本地归档失败（${result.archiveError}），卡片暂时经 ComfyUI 代理播放。`)
   if (result.media.length > 0) lines.push('这些文件会显示在调用这次生成的那一轮回复下方（对话主流程里）直接播放，不需要再贴链接。')
+  if (result.status === 'completed') lines.push('这就是最终结果：不用再查状态，也不用再查地址。')
   return lines.join('\n')
 }
 
@@ -418,6 +474,9 @@ async function launch(
     values: spec.values,
   })
   const { promptId } = queued
+  // The prompt-type parameters of this run, resolved once so the result can
+  // name the subject actually submitted (and flag a silently used default).
+  const prompts = promptsUsed(spec.parameters, spec.values)
   const wait = async (signal: AbortSignal, onPoll?: () => Promise<void>, cancelOnAbort = true): Promise<RunResult> => {
     const startedAt = Date.now()
     try {
@@ -430,10 +489,14 @@ async function launch(
         ...(onPoll !== undefined ? { onPoll } : {}),
       })
       const { media, archiveError } = await runtime.complete(promptId, entry)
-      return {
+      const result: RunResult = {
         kind: 'sync', promptId, status: 'completed', elapsedMs: Date.now() - startedAt, media, summary: summarizeMedia(media),
         ...(archiveError !== undefined ? { archiveError } : {}),
+        ...(prompts.length > 0 ? { prompts } : {}),
       }
+      // The same text the rendered tool output shows, carried in the value for
+      // code-dispatched callers that render no card.
+      return { ...result, report: renderRunResultText(result) }
     } catch (error) {
       runtime.untrack(promptId)
       const message = error instanceof Error ? error.message : String(error)
@@ -1015,6 +1078,18 @@ function workflowDefinition(runtime: ComfyUIRuntime, ctx: Context): ToolDefiniti
       const values = typeof args.parameters === 'object' && args.parameters !== null
         ? (args.parameters as Record<string, unknown>)
         : {}
+      // Unknown parameter names are refused, not ignored. A silently dropped
+      // key (a misspelled prompt) would run the saved default and look like a
+      // successful generation of the wrong subject — the same guard the
+      // template path already has.
+      const known = new Set((saved.parameters ?? []).map((param) => param.name))
+      const unknown = Object.keys(values).filter((name) => !known.has(name))
+      if (unknown.length > 0) {
+        throw new Error(
+          `comfyui_workflow: ${unknown.join(', ')} 不是工作流 "${saved.name}" 的参数（可用：${[...known].join(', ') || '（无）'}）— 本次没有提交任何内容。` +
+          '参数名要和工作流清单里的一字不差；如果工作流在 ComfyUI 里改过，先用 action: refresh 刷新参数清单。',
+        )
+      }
       const mode = args.mode === undefined ? 'sync' : args.mode
       if (mode !== 'sync' && mode !== 'async') {
         throw new Error(`comfyui_workflow: mode must be sync or async, got ${String(mode)}`)

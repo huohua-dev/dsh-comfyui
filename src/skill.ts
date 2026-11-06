@@ -8,12 +8,35 @@ export const COMFYUI_SKILL = {
   name: 'dsh-comfyui-workflows',
   source: 'runtime',
   description:
-    'ComfyUI 生成与工作流管理：在对话里用 MiniMax H3 文生视频（h3_t2v 模板、按秒设时长、异步后台任务、成片自动存本机、存成模板/更新/删除）与参考生视频（h3_r2v：角色参考图 + 音色参考 + 首尾关键帧 + 分段续接，本机素材用 comfyui_upload 上传）；区分“图工作流”（ComfyUI 端保存的画布，衍生主题）与“API 工作流”（可执行，运行主题），分析画布中的多个独立流程（连通分量），以及图→API 提取的规则与面板操作引导。也包含本机环境（用户 ComfyUI 目录）与 TTS-Audio-Suite 音色库的快速查询/快照刷新方案。处理 comfyui_workflow、需要定位用户 ComfyUI 文件/音色库，或用户要求运行 ComfyUI 端保存的工作流时加载。',
+    'ComfyUI 生成与工作流管理：生成任何内容时第一步先 comfyui_workflow list 挑库里的工作流再 run（库里没有合适的再用内置 h3 模板，或按本机环境手写）；在对话里用 MiniMax H3 文生视频（h3_t2v 模板、按秒设时长、异步后台任务、成片自动存本机、存成模板/更新/删除）与参考生视频（h3_r2v：角色参考图 + 音色参考 + 首尾关键帧 + 分段续接，本机素材用 comfyui_upload 上传）；区分“图工作流”（ComfyUI 端保存的画布，衍生主题）与“API 工作流”（可执行，运行主题），分析画布中的多个独立流程（连通分量），以及图→API 提取的规则与面板操作引导。也包含本机环境（用户 ComfyUI 目录）与 TTS-Audio-Suite 音色库的快速查询/快照刷新方案。处理 comfyui_workflow、需要定位用户 ComfyUI 文件/音色库，或用户要求运行 ComfyUI 端保存的工作流时加载。',
   whenToUse:
-    '用户要求生成视频/图片（含用角色设定图/参考音色做角色短视频、按关键帧或上一段续接）、把一次运行存成模板、修改或删除已存工作流、取消生成任务时；用户要求运行/管理 ComfyUI 中保存的工作流，或 comfyui_workflow list 显示未提取的图工作流时；需要判断一个画布是否包含多个独立流程、或解释为何某个工作流无法直接运行时；需要查询 TTS-Audio-Suite 音色库、刷新已存工作流的音色参数快照、或定位用户本机 ComfyUI 目录时；或 comfyui_workflow list 里某个工作流带“技能包”标记、需要在运行前读取它时。',
+    '用户要用 ComfyUI 生成任何内容时（先 list 再 run）；用户要求生成视频/图片（含用角色设定图/参考音色做角色短视频、按关键帧或上一段续接）、把一次运行存成模板、修改或删除已存工作流、取消生成任务时；用户要求运行/管理 ComfyUI 中保存的工作流，或 comfyui_workflow list 显示未提取的图工作流时；需要判断一个画布是否包含多个独立流程、或解释为何某个工作流无法直接运行时；需要查询 TTS-Audio-Suite 音色库、刷新已存工作流的音色参数快照、或定位用户本机 ComfyUI 目录时；或 comfyui_workflow list 里某个工作流带“技能包”标记、需要在运行前读取它时。',
   content: `# dsh-comfyui 工作流管理
 
-本插件把 ComfyUI 工作流分成两个主题：
+## 生成内容：先看工作流库，再决定走哪条路
+
+用户要生成任何内容（图片、视频、音频）时，按这个顺序选路：
+
+1. **先调用 \`comfyui_workflow action: list\`** 看看库里的工作流。库里的工作流是用户为这台服务器配好的，模型和节点都可用。
+2. 库里有合适的就用它：有技能包的先 \`action: skill { id }\` 读一遍，再 \`comfyui_workflow run { id, parameters }\`（见「运行工作流的正确流程」）。
+3. 库里没有合适的、要的是 MiniMax H3 视频（本机装了 H3 节点），用内置模板 \`comfyui_run { template: "h3_t2v" | "h3_r2v" }\`（见下节）。
+4. 都不行才手写工作流：\`comfyui_object_info { filter }\` 查环境 → 手写 API JSON → \`comfyui_run { workflow }\` 试跑。
+
+\`comfyui_object_info\` 和 \`comfyui_run\` 是次要入口，只在库里没有合适工作流、或要临时测试时用。
+
+结果在返回值里：\`report\` 字段就是给人看的最终结果说明（哪个提示词真的提交了、文件在哪）。只能在 run_code 里调用工具时读 \`report\`，不要自己去拼地址。
+
+## 手写工作流（次要：临时测试，或按本机环境新建工作流）
+
+库里没有合适的工作流、需要临时测试，或要为本机环境新建一个工作流时才用，步骤固定：
+
+1. **查环境**：\`comfyui_object_info { filter }\` 查节点类名、输入项和加载器里实际可选的模型文件名（如 \`filter: "Loader"\`）。
+2. **手写 API JSON**：节点 id → \`{ class_type, inputs }\`，连线写成 \`["节点id字符串", 输出槽位]\`，模型名只用第 1 步查到的。
+3. **运行测试**：\`comfyui_run { workflow }\`，报错就按错误信息改 JSON 再跑。
+
+测通后如果要长期用，告诉用户在面板里「新建工作流」粘贴这份 JSON 存进库，之后走 list → run。
+
+## 两个工作流主题
 
 - **图工作流（衍生主题）**：用户在 ComfyUI 画布上保存的 UI 图（nodes/links/widgets），是"源"。不能直接运行。一个图可能包含**多个互相独立的流程**。
 - **API 工作流（运行主题）**：可执行的 API 格式 prompt，是"运行单元"。从图里**提取（extract）**出来，或用户直接粘贴导入。运行必须用 API 工作流。

@@ -85,6 +85,84 @@ function argsSummary(args: Record<string, unknown>): string {
   return parts.join(' · ')
 }
 
+/** Where one of our prompts stands in ComfyUI's queue. */
+type QueueState =
+  | { phase: 'pending'; ahead: number }
+  | { phase: 'running'; value: number; max: number }
+
+interface QueueEntry { promptId: string; ours: boolean; progress: { value: number; max: number } | null }
+
+/**
+ * Poll /comfyui/queue (every 2 s while `active`) for one prompt's queue
+ * position and sampler progress. A running sync call does not know its
+ * prompt id yet, so without one this follows the first prompt of ours that
+ * is running (else pending) — sync calls block, so that is the call's own.
+ */
+function useQueueState(promptId: string | undefined, active: boolean): QueueState | null {
+  const [state, setState] = useState<QueueState | null>(null)
+  useEffect(() => {
+    if (!active) return undefined
+    let stopped = false
+    let timer: number | undefined
+    const poll = async (): Promise<void> => {
+      try {
+        const response = await fetch('/comfyui/queue', { headers: { accept: 'application/json' } })
+        const data = (await response.json()) as { ok?: boolean; running?: QueueEntry[]; pending?: QueueEntry[] }
+        if (stopped) return
+        const running = data.running ?? []
+        const pending = data.pending ?? []
+        const match = (entry: QueueEntry): boolean => promptId !== undefined ? entry.promptId === promptId : entry.ours
+        const run = running.find(match)
+        const waitIndex = pending.findIndex(match)
+        if (run !== undefined) {
+          setState({ phase: 'running', value: run.progress?.value ?? 0, max: run.progress?.max ?? 0 })
+        } else if (waitIndex >= 0) {
+          setState({ phase: 'pending', ahead: running.length + waitIndex })
+        } else {
+          setState(null)
+        }
+      } catch {
+        // Best-effort: keep the last known state and try again.
+      }
+      if (!stopped) timer = window.setTimeout(() => { void poll() }, 2_000)
+    }
+    void poll()
+    return () => {
+      stopped = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [promptId, active])
+  return state
+}
+
+function ProgressLine({ state, t }: { state: QueueState | null; t: ComfyUICardProps['t'] }): ReturnType<typeof h> {
+  if (state === null) return h('div', { className: 'dsc-meta' }, t('cardWaiting'))
+  if (state.phase === 'pending') return h('div', { className: 'dsc-meta' }, t('cardQueued', { n: state.ahead }))
+  const percent = state.max > 0 ? Math.min(100, Math.round((state.value / state.max) * 100)) : 0
+  return h('div', { className: 'dsc-progress' },
+    h('div', { className: 'dsc-progress-track' }, h('div', { className: 'dsc-progress-fill', style: { width: `${percent}%` } })),
+    h('span', { className: 'dsc-meta' }, state.max > 0 ? t('cardStep', { value: state.value, max: state.max }) : t('cardWaiting')),
+  )
+}
+
+/** A saved workflow's name by id, for the running card of comfyui_workflow run. */
+function useWorkflowName(id: string | undefined): string | undefined {
+  const [name, setName] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    if (id === undefined) return undefined
+    let stopped = false
+    void fetch('/comfyui/workflows', { headers: { accept: 'application/json' } })
+      .then(async (response) => (await response.json()) as { workflows?: Array<{ id: string; name: string }> })
+      .then((data) => {
+        const found = data.workflows?.find((workflow) => workflow.id === id)
+        if (!stopped && found !== undefined) setName(found.name)
+      })
+      .catch(() => undefined)
+    return () => { stopped = true }
+  }, [id])
+  return name
+}
+
 function aspectLabel(width: number, height: number): string {
   const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
   const g = gcd(width, height)
@@ -389,16 +467,35 @@ function SettledCard({ block, t }: { block: ToolResultNode; t: ComfyUICardProps[
   return h(ResultCard, { title: '', result: meta, t })
 }
 
+/**
+ * A call still running: what is generating, and how far along it is.
+ *
+ * Its own component (not a branch of ComfyUICard) so the hooks below always
+ * run in the same order — the settled card renders without them.
+ */
+function RunningCard({ block, t }: { block: RunningToolCall; t: ComfyUICardProps['t'] }): ReturnType<typeof h> {
+  const args = parseArgs(block.argsRaw)
+  const isRun = block.name === 'comfyui_run' || args.action === 'run'
+  const workflowId = block.name === 'comfyui_workflow' && typeof args.id === 'string' ? args.id : undefined
+  const savedName = useWorkflowName(isRun ? workflowId : undefined)
+  // Async calls return at once; their progress lives on the background card.
+  const queue = useQueueState(undefined, isRun && args.mode !== 'async')
+  const title = block.name === 'comfyui_run'
+    ? t('cardHandWritten')
+    : savedName ?? workflowId ?? ''
+  return h('div', { className: 'dsc-card' },
+    h('div', { className: 'dsc-card-head' },
+      h('span', { className: 'dsc-badge' }, t('cardGenerating')),
+      h('span', { className: 'dsc-meta' }, `${t('cardWorkflow')} ${title !== '' ? `${title} · ` : ''}${argsSummary(args)} · ${t('cardMode')} ${String(args.mode ?? 'sync')}`),
+    ),
+    args.mode === 'async' ? null : h(ProgressLine, { state: queue, t }),
+  )
+}
+
 /** The card component: picks running vs settled rendering from the block. */
 export function ComfyUICard({ t, block }: ComfyUICardProps): ReturnType<typeof h> {
   if (isResultNode(block)) {
     return h(SettledCard, { block, t })
   }
-  const args = parseArgs(block.argsRaw)
-  return h('div', { className: 'dsc-card' },
-    h('div', { className: 'dsc-card-head' },
-      h('span', { className: 'dsc-badge' }, t('cardGenerating')),
-      h('span', { className: 'dsc-meta' }, `${t('cardWorkflow')} ${argsSummary(args)} · ${t('cardMode')} ${String(args.mode ?? 'sync')}`),
-    ),
-  )
+  return h(RunningCard, { block, t })
 }

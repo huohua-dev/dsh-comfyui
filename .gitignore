@@ -12,3 +12,8 @@ DEVELOPMENT.md
 
 # local production workspace (media, voice clips, host-specific scripts) — never commit
 work/
+
+# macOS 目录元数据
+.DS_Store
+# npm pack 产物（装机验收用的本地 tarball）
+/*.tgz

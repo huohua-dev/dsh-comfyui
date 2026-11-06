@@ -21,6 +21,15 @@ const CSS = `
 }
 .dsc-badge--ok { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 16%, transparent); }
 .dsc-badge--err { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 16%, transparent); }
+/* Sampler progress bar on a running card (card.tsx useQueueState). */
+.dsc-progress { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 90px; }
+.dsc-progress-track { flex: 1; height: 6px; border-radius: 3px; background: var(--dsw-alias-bg-layer-2); overflow: hidden; }
+.dsc-progress-fill { height: 100%; background: #3b82f6; transition: width 0.4s; }
+.dsc-progress:hover .dsc-progress-fill { background: #2563eb; }
+/* Inline players inserted after video/audio links in chat replies (inline-media.ts). */
+.dsc-inline-player { display: block; margin: 6px 0; }
+.dsc-inline-player video { display: block; max-width: 100%; max-height: 360px; border-radius: 8px; background: transparent; }
+.dsc-inline-player audio { display: block; width: min(100%, 480px); height: 40px; }
 .dsc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin-top: 6px; }
 .dsc-media { border-radius: 6px; overflow: hidden; background: var(--dsw-alias-bg-layer-1); }
 .dsc-media img, .dsc-media video, .dsc-media audio { display: block; width: 100%; max-height: 320px; object-fit: contain; background: #000; }
@@ -243,6 +252,9 @@ select.dsc-input option { background: var(--dsw-alias-bg-layer-1); color: var(--
   font-size: 11px; color: var(--dsw-alias-label-secondary); text-align: center;
 }
 .dsc-asset-meta { padding: 3px 6px; font-size: 11px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Second meta line: the output filename, under the workflow name. */
+.dsc-asset-file { padding-top: 0; font-size: 10px; opacity: 0.8; }
+.dsc-asset--empty .dsc-asset-file { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 /* confirmation modal (asset deletion) */
 .dsc-confirm { width: min(360px, 88vw); display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 12px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.32); }
 .dsc-confirm-title { font-weight: 600; font-size: 14px; }

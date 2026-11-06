@@ -52,6 +52,10 @@ export const zh = {
   cardLocal: '本地归档',
   cardProxy: '经 ComfyUI 代理',
   cardProgress: '进度',
+  cardHandWritten: '手写工作流',
+  cardWaiting: '等待 ComfyUI…',
+  cardQueued: '排队中（前面还有 {n} 个）',
+  cardStep: '步数 {value}/{max}',
   // panel shell
   panelTitle: 'ComfyUI 面板',
   panelReset: '复位位置与大小',
@@ -333,6 +337,10 @@ export const en = {
   cardLocal: 'local archive',
   cardProxy: 'via ComfyUI proxy',
   cardProgress: 'Progress',
+  cardHandWritten: 'Hand-written workflow',
+  cardWaiting: 'Waiting for ComfyUI…',
+  cardQueued: 'Queued ({n} ahead)',
+  cardStep: 'Step {value}/{max}',
   // panel shell
   panelTitle: 'ComfyUI Panel',
   panelReset: 'Reset position & size',
