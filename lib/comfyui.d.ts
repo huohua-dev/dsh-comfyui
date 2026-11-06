@@ -123,7 +123,8 @@ export declare class ComfyUIClient {
     private unreachable;
     private base;
     private endpoint;
-    /** fetch() one route, retrying a 404 under /api until the prefix is known. */
+    /** fetch() one route, retrying a miss (404, or an HTML page) under /api
+     * until the prefix is known. */
     private fetchRoute;
     private request;
     /** Best-effort GET of an arbitrary JSON endpoint on the ComfyUI server.

@@ -58,6 +58,10 @@ window.__ModuleLoader__.load({
 			cardLocal: "本地归档",
 			cardProxy: "经 ComfyUI 代理",
 			cardProgress: "进度",
+			cardHandWritten: "手写工作流",
+			cardWaiting: "等待 ComfyUI…",
+			cardQueued: "排队中（前面还有 {n} 个）",
+			cardStep: "步数 {value}/{max}",
 			panelTitle: "ComfyUI 面板",
 			panelReset: "复位位置与大小",
 			close: "关闭",
@@ -329,6 +333,10 @@ window.__ModuleLoader__.load({
 			cardLocal: "local archive",
 			cardProxy: "via ComfyUI proxy",
 			cardProgress: "Progress",
+			cardHandWritten: "Hand-written workflow",
+			cardWaiting: "Waiting for ComfyUI…",
+			cardQueued: "Queued ({n} ahead)",
+			cardStep: "Step {value}/{max}",
 			panelTitle: "ComfyUI Panel",
 			panelReset: "Reset position & size",
 			close: "Close",
@@ -718,6 +726,78 @@ window.__ModuleLoader__.load({
 			if (parts.length === 0) parts.push("custom workflow");
 			return parts.join(" · ");
 		}
+		/**
+		* Poll /comfyui/queue (every 2 s while `active`) for one prompt's queue
+		* position and sampler progress. A running sync call does not know its
+		* prompt id yet, so without one this follows the first prompt of ours that
+		* is running (else pending) — sync calls block, so that is the call's own.
+		*/
+		function useQueueState(promptId, active) {
+			const [state, setState] = (0, react.useState)(null);
+			(0, react.useEffect)(() => {
+				if (!active) return void 0;
+				let stopped = false;
+				let timer;
+				const poll = async () => {
+					try {
+						const data = await (await fetch("/comfyui/queue", { headers: { accept: "application/json" } })).json();
+						if (stopped) return;
+						const running = data.running ?? [];
+						const pending = data.pending ?? [];
+						const match = (entry) => promptId !== void 0 ? entry.promptId === promptId : entry.ours;
+						const run = running.find(match);
+						const waitIndex = pending.findIndex(match);
+						if (run !== void 0) setState({
+							phase: "running",
+							value: run.progress?.value ?? 0,
+							max: run.progress?.max ?? 0
+						});
+						else if (waitIndex >= 0) setState({
+							phase: "pending",
+							ahead: running.length + waitIndex
+						});
+						else setState(null);
+					} catch {}
+					if (!stopped) timer = window.setTimeout(() => {
+						poll();
+					}, 2e3);
+				};
+				poll();
+				return () => {
+					stopped = true;
+					if (timer !== void 0) window.clearTimeout(timer);
+				};
+			}, [promptId, active]);
+			return state;
+		}
+		function ProgressLine({ state, t }) {
+			if (state === null) return (0, react.createElement)("div", { className: "dsc-meta" }, t("cardWaiting"));
+			if (state.phase === "pending") return (0, react.createElement)("div", { className: "dsc-meta" }, t("cardQueued", { n: state.ahead }));
+			const percent = state.max > 0 ? Math.min(100, Math.round(state.value / state.max * 100)) : 0;
+			return (0, react.createElement)("div", { className: "dsc-progress" }, (0, react.createElement)("div", { className: "dsc-progress-track" }, (0, react.createElement)("div", {
+				className: "dsc-progress-fill",
+				style: { width: `${percent}%` }
+			})), (0, react.createElement)("span", { className: "dsc-meta" }, state.max > 0 ? t("cardStep", {
+				value: state.value,
+				max: state.max
+			}) : t("cardWaiting")));
+		}
+		/** A saved workflow's name by id, for the running card of comfyui_workflow run. */
+		function useWorkflowName(id) {
+			const [name, setName] = (0, react.useState)(void 0);
+			(0, react.useEffect)(() => {
+				if (id === void 0) return void 0;
+				let stopped = false;
+				fetch("/comfyui/workflows", { headers: { accept: "application/json" } }).then(async (response) => await response.json()).then((data) => {
+					const found = data.workflows?.find((workflow) => workflow.id === id);
+					if (!stopped && found !== void 0) setName(found.name);
+				}).catch(() => void 0);
+				return () => {
+					stopped = true;
+				};
+			}, [id]);
+			return name;
+		}
 		function aspectLabel(width, height) {
 			const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
 			const g = gcd(width, height);
@@ -950,14 +1030,34 @@ window.__ModuleLoader__.load({
 				t
 			});
 		}
+		/**
+		* A call still running: what is generating, and how far along it is.
+		*
+		* Its own component (not a branch of ComfyUICard) so the hooks below always
+		* run in the same order — the settled card renders without them.
+		*/
+		function RunningCard({ block, t }) {
+			const args = parseArgs(block.argsRaw);
+			const isRun = block.name === "comfyui_run" || args.action === "run";
+			const workflowId = block.name === "comfyui_workflow" && typeof args.id === "string" ? args.id : void 0;
+			const savedName = useWorkflowName(isRun ? workflowId : void 0);
+			const queue = useQueueState(void 0, isRun && args.mode !== "async");
+			const title = block.name === "comfyui_run" ? t("cardHandWritten") : savedName ?? workflowId ?? "";
+			return (0, react.createElement)("div", { className: "dsc-card" }, (0, react.createElement)("div", { className: "dsc-card-head" }, (0, react.createElement)("span", { className: "dsc-badge" }, t("cardGenerating")), (0, react.createElement)("span", { className: "dsc-meta" }, `${t("cardWorkflow")} ${title !== "" ? `${title} · ` : ""}${argsSummary(args)} · ${t("cardMode")} ${String(args.mode ?? "sync")}`)), args.mode === "async" ? null : (0, react.createElement)(ProgressLine, {
+				state: queue,
+				t
+			}));
+		}
 		/** The card component: picks running vs settled rendering from the block. */
 		function ComfyUICard({ t, block }) {
 			if (isResultNode(block)) return (0, react.createElement)(SettledCard, {
 				block,
 				t
 			});
-			const args = parseArgs(block.argsRaw);
-			return (0, react.createElement)("div", { className: "dsc-card" }, (0, react.createElement)("div", { className: "dsc-card-head" }, (0, react.createElement)("span", { className: "dsc-badge" }, t("cardGenerating")), (0, react.createElement)("span", { className: "dsc-meta" }, `${t("cardWorkflow")} ${argsSummary(args)} · ${t("cardMode")} ${String(args.mode ?? "sync")}`)));
+			return (0, react.createElement)(RunningCard, {
+				block,
+				t
+			});
 		}
 		//#endregion
 		//#region src/client/api.ts
@@ -4324,7 +4424,10 @@ window.__ModuleLoader__.load({
 			if (first === void 0 || broken) return (0, react.createElement)("div", {
 				className: "dsc-asset dsc-asset--empty",
 				onClick: props.onClick
-			}, (0, react.createElement)("div", null, props.t("assetGone")), (0, react.createElement)("div", { className: "dsc-meta" }, props.asset.workflowName ?? "—"), trash);
+			}, (0, react.createElement)("div", null, props.t("assetGone")), (0, react.createElement)("div", { className: "dsc-meta" }, props.asset.workflowName ?? "—"), first !== void 0 ? (0, react.createElement)("div", {
+				className: "dsc-meta dsc-asset-file",
+				title: first.filename
+			}, first.filename) : null, trash);
 			return (0, react.createElement)("div", {
 				className: "dsc-asset",
 				onClick: props.onClick
@@ -4454,7 +4557,10 @@ window.__ModuleLoader__.load({
 				alt: first.filename,
 				loading: "lazy",
 				onError: () => setBroken(true)
-			}), (0, react.createElement)("div", { className: "dsc-asset-meta" }, props.asset.workflowName ?? "—"), trash);
+			}), (0, react.createElement)("div", { className: "dsc-asset-meta" }, props.asset.workflowName ?? "—"), (0, react.createElement)("div", {
+				className: "dsc-asset-meta dsc-asset-file",
+				title: first.filename
+			}, first.filename), trash);
 		}
 		/**
 		* Tab 3: the task center — active tasks (pending / generating) shown as
@@ -4667,6 +4773,15 @@ window.__ModuleLoader__.load({
 }
 .dsc-badge--ok { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 16%, transparent); }
 .dsc-badge--err { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 16%, transparent); }
+/* Sampler progress bar on a running card (card.tsx useQueueState). */
+.dsc-progress { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 90px; }
+.dsc-progress-track { flex: 1; height: 6px; border-radius: 3px; background: var(--dsw-alias-bg-layer-2); overflow: hidden; }
+.dsc-progress-fill { height: 100%; background: #3b82f6; transition: width 0.4s; }
+.dsc-progress:hover .dsc-progress-fill { background: #2563eb; }
+/* Inline players inserted after video/audio links in chat replies (inline-media.ts). */
+.dsc-inline-player { display: block; margin: 6px 0; }
+.dsc-inline-player video { display: block; max-width: 100%; max-height: 360px; border-radius: 8px; background: transparent; }
+.dsc-inline-player audio { display: block; width: min(100%, 480px); height: 40px; }
 .dsc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin-top: 6px; }
 .dsc-media { border-radius: 6px; overflow: hidden; background: var(--dsw-alias-bg-layer-1); }
 .dsc-media img, .dsc-media video, .dsc-media audio { display: block; width: 100%; max-height: 320px; object-fit: contain; background: #000; }
@@ -4889,6 +5004,9 @@ select.dsc-input option { background: var(--dsw-alias-bg-layer-1); color: var(--
   font-size: 11px; color: var(--dsw-alias-label-secondary); text-align: center;
 }
 .dsc-asset-meta { padding: 3px 6px; font-size: 11px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Second meta line: the output filename, under the workflow name. */
+.dsc-asset-file { padding-top: 0; font-size: 10px; opacity: 0.8; }
+.dsc-asset--empty .dsc-asset-file { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 /* confirmation modal (asset deletion) */
 .dsc-confirm { width: min(360px, 88vw); display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 12px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.32); }
 .dsc-confirm-title { font-weight: 600; font-size: 14px; }
@@ -5267,6 +5385,112 @@ video.dsc-picker-player { max-height: 180px; }
 			})));
 		}
 		//#endregion
+		//#region src/client/inline-media.ts
+		/**
+		* Inline players for generated video/audio in chat replies.
+		*
+		* The model shows results by pasting Markdown into its reply (CLAUDE.md
+		* contract 18). Images embed natively, but dsh's chat Markdown has no video or
+		* audio syntax and renders raw HTML as literal text, so a video/audio result
+		* can only be a link there. This module watches the page and, after every
+		* link to this plugin's own `/comfyui/media` route whose file is a video or
+		* audio file, inserts a native <video>/<audio> player.
+		*
+		* It only ever ADDS sibling nodes next to dsh-rendered links — it never moves
+		* or removes dsh's own nodes — so React's reconciliation of the message keeps
+		* working. Streaming re-renders and dsh updates simply trigger a re-scan: a
+		* player is added only when the link is not already followed by its player,
+		* and players whose link has gone are removed. The plugin's own UI (card file
+		* links, panel) is skipped. Everything is undone when the plugin unloads.
+		*/
+		const VIDEO_EXTENSIONS = /* @__PURE__ */ new Set([
+			"mp4",
+			"webm",
+			"mov",
+			"m4v",
+			"mkv"
+		]);
+		const AUDIO_EXTENSIONS = /* @__PURE__ */ new Set([
+			"mp3",
+			"wav",
+			"flac",
+			"ogg",
+			"oga",
+			"opus",
+			"m4a",
+			"aac"
+		]);
+		const PLAYER_CLASS = "dsc-inline-player";
+		/** The player kind for a /comfyui/media link, or undefined for anything else. */
+		function mediaKind(href) {
+			let url;
+			try {
+				url = new URL(href, window.location.href);
+			} catch {
+				return;
+			}
+			if (url.origin !== window.location.origin) return void 0;
+			if (!url.pathname.endsWith("/comfyui/media")) return void 0;
+			const file = url.searchParams.get("file") ?? "";
+			const dot = file.lastIndexOf(".");
+			if (dot < 0) return void 0;
+			const ext = file.slice(dot + 1).toLowerCase();
+			if (VIDEO_EXTENSIONS.has(ext)) return "video";
+			if (AUDIO_EXTENSIONS.has(ext)) return "audio";
+		}
+		function isPlayerFor(node, href) {
+			return node !== null && node.classList.contains(PLAYER_CLASS) && node.getAttribute("data-src") === href;
+		}
+		function makePlayer(kind, href) {
+			const wrap = document.createElement("span");
+			wrap.className = `${PLAYER_CLASS} ${PLAYER_CLASS}--${kind}`;
+			wrap.setAttribute("data-src", href);
+			const player = document.createElement(kind);
+			player.src = href;
+			player.controls = true;
+			player.preload = "metadata";
+			wrap.appendChild(player);
+			return wrap;
+		}
+		function scan() {
+			for (const player of Array.from(document.querySelectorAll(`.${PLAYER_CLASS}`))) {
+				const prev = player.previousElementSibling;
+				const src = player.getAttribute("data-src");
+				if (!(prev instanceof HTMLAnchorElement) || src === null || prev.href !== src) player.remove();
+			}
+			for (const link of Array.from(document.querySelectorAll("a[href*=\"/comfyui/media\"]"))) {
+				if (link.closest("[class^=\"dsc-\"], [class*=\" dsc-\"]") !== null) continue;
+				const kind = mediaKind(link.href);
+				if (kind === void 0) continue;
+				if (isPlayerFor(link.nextElementSibling, link.href)) continue;
+				link.after(makePlayer(kind, link.href));
+			}
+		}
+		/** Start watching the page; returns the disposer that stops and cleans up. */
+		function installInlineMedia() {
+			let frame;
+			const schedule = () => {
+				if (frame !== void 0) return;
+				frame = window.requestAnimationFrame(() => {
+					frame = void 0;
+					scan();
+				});
+			};
+			const observer = new MutationObserver((mutations) => {
+				if (mutations.some((mutation) => [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)].some((node) => !(node instanceof HTMLElement && node.classList.contains(PLAYER_CLASS))))) schedule();
+			});
+			observer.observe(document.body, {
+				childList: true,
+				subtree: true
+			});
+			schedule();
+			return () => {
+				observer.disconnect();
+				if (frame !== void 0) window.cancelAnimationFrame(frame);
+				for (const player of Array.from(document.querySelectorAll(`.${PLAYER_CLASS}`))) player.remove();
+			};
+		}
+		//#endregion
 		//#region src/client/index.ts
 		/**
 		* dsh-comfyui client half: registers the comfyui_run tool card, the Turn-tail
@@ -5278,6 +5502,7 @@ video.dsc-picker-player { max-height: 180px; }
 		function apply(ctx) {
 			const t = makeT(getLang());
 			ctx.effect(() => injectStyles(), "dsh-comfyui: styles");
+			ctx.effect(() => installInlineMedia(), "dsh-comfyui: inline video/audio players");
 			ctx.slots.inject("tool.call.toolview", () => ctx.slots.register({
 				name: "tool.call.toolview",
 				key: "comfyui_run"

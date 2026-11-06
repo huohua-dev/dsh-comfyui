@@ -39,6 +39,21 @@
 - **Unreachable ComfyUI** errors name the server and a configurable hint.
 - Settings carry descriptions and appear on this plugin's entry in the DSH Plugins page.
 
+### What 0.6.4 changes over upstream 0.5.5
+
+Upstream `fandc520/dsh-comfyui` 0.5.5 (`1e10d0e`) is now merged in, and every commit was reviewed (no backdoor, no exfiltration, no hidden endpoints). This fork keeps its own architecture and takes only the parts that are genuinely better upstream:
+
+- **Clearer host-compatibility gate**: the manifest now declares `engines.dsh` (dsh 0.2.1+ reads it alone), kept in step with the `dsh-settings` peer range, with a guard test so the two cannot drift apart.
+- **The result explains itself**: every run lists the **prompt that was actually submitted** (flagged when a saved default was used instead of a passed value), so there is no guessing about what got generated. The same text is also carried in a `report` field for code-dispatched callers (`run_code` / PTC mode) that render no card.
+- **Unknown parameter names are refused**: a misspelled key is no longer silently ignored and run with the default; `comfyui_workflow action: run` names the available parameters and points at `action: refresh`.
+- **Progress on the running card**: queue position (how many ahead) plus a sampler progress bar, and the name of the workflow being run.
+- **Video and audio in replies actually play**: chat Markdown has no media syntax, so a video/audio link the model pastes now gets a native player inserted after it (**same-origin links only**).
+- **Asset cards show the output filename**.
+- **CI**: GitHub Actions runs typecheck, the build, every offline self-test and `npm pack --dry-run` (ubuntu/windows × Node 22.19/24).
+- **New host-compatibility self-test**: `npm run test:host-compat` checks the host registration surface, the version gates and the background-job contract offline.
+
+What this fork deliberately does **not** take from upstream (there it would be a regression): the built-in templates (`txt2img` / `img2img` / `video` / `h3_t2v` / `h3_r2v` all stay), the chat media wall (results still render below that turn's reply), same-origin relative media URLs, the route trust fence, and cancel-only-your-own-prompt (`cancelOwn`).
+
 ## Features
 
 ### Agent tools

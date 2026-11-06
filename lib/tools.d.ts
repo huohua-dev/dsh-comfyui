@@ -195,6 +195,13 @@ export interface RunMediaItem {
     /** Absolute path of the local archive copy on the DSH machine. */
     localPath?: string;
 }
+/** One prompt-type parameter of a saved-workflow run, as actually submitted. */
+export interface PromptUsed {
+    name: string;
+    text: string;
+    /** false = the caller did not pass it, so the saved default was used. */
+    passed: boolean;
+}
 /** Synchronous completion result. */
 export interface RunResult {
     kind: 'sync';
@@ -205,6 +212,14 @@ export interface RunResult {
     summary: string;
     /** Why the local archive copy is missing (the run itself succeeded). */
     archiveError?: string;
+    /** The prompt-type parameters of this run, as actually submitted. */
+    prompts?: PromptUsed[];
+    /**
+     * The model-facing text of this run, carried in the value so a
+     * code-dispatched caller (run_code / PTC mode) reads the same account the
+     * rendered tool output would show — those paths render no tool card.
+     */
+    report?: string;
 }
 /** Background mode result: collect later with job_output. */
 export interface BackgroundResult {
