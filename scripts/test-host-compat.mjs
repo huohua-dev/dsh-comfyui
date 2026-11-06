@@ -282,6 +282,8 @@ function createComfyStub(opts = {}) {
     historyMode: opts.historyMode ?? 'success',
     outputs: opts.outputs ?? { 9: { images: [{ filename: 'compat_00001_.png', subfolder: '', type: 'output' }] } },
     queue: opts.queue ?? { queue_running: [], queue_pending: [] },
+    /** The archive download fails (ComfyUI /view answers 404). */
+    viewFails: opts.viewFails === true,
     /** The API prompts that were queued, in order. */
     submitted: [],
     /** The mutating requests that reached the server (queue delete, interrupt). */
@@ -318,6 +320,7 @@ function createComfyStub(opts = {}) {
     }
     if (path === '/view') {
       // A tiny PNG-ish payload: the local archive downloads it for real.
+      if (state.viewFails) return new Response('not found', { status: 404 })
       return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
         status: 200,
         headers: { 'content-type': 'image/png' },
@@ -855,7 +858,58 @@ globalThis.fetch = realFetch
 }
 
 // ---------------------------------------------------------------------------
-// 5c. Saved-workflow runs: unknown parameter names are refused before
+// 5c. A failing archive degrades the run, it does not break it: the media
+//     keeps its ComfyUI proxy URL, the reason comes back as `archiveError`,
+//     and the host logger is told about it (src/index.ts logs through
+//     `ctx.logger.warn` — a host stub without a logger turns this degraded
+//     path into a crash).
+// ---------------------------------------------------------------------------
+{
+  const promptId = '66666666-0000-4000-8000-000000000006'
+  const comfy = createComfyStub({ promptId, viewFails: true })
+  globalThis.fetch = comfy.stub
+  const stub = createHostStub()
+  const archiveDir = mkdtempSync(join(tmpdir(), 'dsh-comfyui-host-compat-archive-'))
+  try {
+    await apply(stub.ctx, { ...COMFY_CONFIG, dataDir: archiveDir, pollIntervalMs: 200 })
+    const run = stub.calls.tools.find((t) => t.name === 'comfyui_run')
+    const value = await run.execute(
+      { workflow: handWritten() },
+      { agent, signal: new AbortController().signal },
+    )
+    check(
+      'archive failure: the run still completes and says why the archive is missing',
+      value.status === 'completed' && typeof value.archiveError === 'string' &&
+        value.archiveError.length > 0,
+      JSON.stringify({ status: value.status, archiveError: value.archiveError }),
+    )
+    check(
+      'archive failure: the media falls back to the ComfyUI proxy URL',
+      value.media?.[0]?.url?.startsWith('/comfyui/media?file=compat_00001_.png'),
+      JSON.stringify(value.media?.[0]),
+    )
+    check(
+      'archive failure: the host logger is told about it (ctx.logger.warn)',
+      stub.calls.logs.some(([level, message]) => level === 'warn' && String(message).includes(promptId)),
+      JSON.stringify(stub.calls.logs),
+    )
+    check(
+      'archive failure: the result text warns that the card plays through the ComfyUI proxy',
+      run.output.render({}, value)[0]?.text?.includes('注意：本地归档失败') === true,
+      run.output.render({}, value)[0]?.text,
+    )
+  } catch (error) {
+    failures += 1
+    console.log(`  FAIL archive-failure check threw — ${error && error.stack ? error.stack : error}`)
+  } finally {
+    disposeAll(stub.disposers)
+    rmSync(archiveDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  }
+  globalThis.fetch = realFetch
+}
+
+// ---------------------------------------------------------------------------
+// 5d. Saved-workflow runs: unknown parameter names are refused before
 //     anything is queued; the result names the prompt actually submitted (and
 //     flags a silently used default); the same text travels in `report` for the
 //     code-dispatched callers that render no tool card.
