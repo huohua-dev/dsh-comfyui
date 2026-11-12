@@ -27,6 +27,13 @@
 > Install (desktop profile, restart DSH afterwards):
 > `"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add github:huohua-dev/dsh-comfyui#dist`
 
+### Local fixes in 0.6.5-local.1
+
+- **Nested workflows (#29)**: preserve full relative paths across listing, viewing, analysis, extraction and library provenance matching; support legacy name paths, v2 userdata-root paths and Windows separators. Reject absolute paths, traversal and hidden entries.
+- Route `file` and stored `comfyuiFile` are relative to `workflows`; do not add another `workflows/` prefix. A real subdirectory named `workflows` is preserved; ambiguous historic prefixes are not guessed or rebound.
+- Moving the panel before resizing now retains its height constraint. Visible custom overlays opt out of macOS window dragging without global style changes.
+- This local package is offline-tested only: not installed into DSH, not connected to real ComfyUI, and native window interactions not verified. Existing screenshots are unchanged.
+
 ### What 0.6.0 changes over upstream 0.5.4
 
 - **Video from chat**: built-in `h3_t2v` template (MiniMax H3 text-to-video, 10Eros TURBO) driven by named `prompt / width / height / seconds / seed / steps`; seconds become frames (3 s = 73, 5 s = 124).

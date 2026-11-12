@@ -80,7 +80,8 @@ export interface ComfyUIJobsResponse {
 /** One entry of a user-data directory listing (/v2/userdata). */
 export interface ComfyUIUserDataEntry {
     name: string;
-    path: string;
+    /** v2 userdata-root path; absent on legacy relative-name listings. */
+    path?: string;
     type: 'file' | 'directory';
     size?: number;
     modified?: number;

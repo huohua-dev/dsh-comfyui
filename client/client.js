@@ -635,6 +635,7 @@ window.__ModuleLoader__.load({
 			}) : (0, react.createElement)("div", { className: "dsc-lightbox-media" }, src);
 			return (0, react.createElement)("div", {
 				className: "dsc-lightbox",
+				"data-window-drag-exclude": "",
 				onClick: onClose
 			}, (0, react.createElement)("div", {
 				className: "dsc-lightbox-body",
@@ -1447,6 +1448,7 @@ window.__ModuleLoader__.load({
 			if (conn.status === "hidden") return null;
 			return (0, react.createElement)("div", {
 				className: `dsc-conn-toast dsc-conn-toast--${conn.status}`,
+				"data-window-drag-exclude": "",
 				role: "status"
 			}, (0, react.createElement)("span", {
 				className: "dsc-conn-toast-dot",
@@ -1501,6 +1503,28 @@ window.__ModuleLoader__.load({
 					if (opening) probeConnection();
 				}
 			}, (0, react.createElement)("span", { className: "dsc-trigger-glyph" }, (0, react.createElement)(ComfyUIIcon)), (0, react.createElement)("span", null, t("panelTitle"))), (0, react.createElement)(ConnectionToast, { t }));
+		}
+		//#endregion
+		//#region src/client/panel-geometry.ts
+		function movedPanelGeometry(geom, pos, measuredHeight) {
+			return {
+				...geom,
+				...pos,
+				height: geom.height ?? measuredHeight
+			};
+		}
+		function panelGeometryStyle(geom) {
+			const style = {};
+			if (geom.x !== void 0 && geom.y !== void 0) {
+				style.left = `${geom.x}px`;
+				style.top = `${geom.y}px`;
+				style.right = "auto";
+				style.bottom = "auto";
+				style.height = "calc(100% - var(--dsc-panel-top, 9%) - var(--dsc-panel-bottom, 2%))";
+			}
+			if (geom.width !== void 0) style.width = `${geom.width}px`;
+			if (geom.height !== void 0) style.height = `${geom.height}px`;
+			return style;
 		}
 		//#endregion
 		//#region src/client/panel.tsx
@@ -2402,11 +2426,7 @@ window.__ModuleLoader__.load({
 				if (d === null) return;
 				if (dragging === "move") {
 					const pos = clampPos(Math.round(d.origX + event.clientX - d.startX), Math.round(d.origY + event.clientY - d.startY), d.width, window.innerWidth, window.innerHeight);
-					setGeom((prev) => ({
-						...prev,
-						x: pos.x,
-						y: pos.y
-					}));
+					setGeom((prev) => movedPanelGeometry(prev, pos, d.height));
 				} else if (dragging === "resize") {
 					const width = Math.max(300, Math.min(720, d.width + event.clientX - d.startX));
 					const height = Math.max(200, Math.min(Math.max(300, window.innerHeight - 40), d.height + event.clientY - d.startY));
@@ -2427,18 +2447,11 @@ window.__ModuleLoader__.load({
 				});
 			};
 			if (!open) return null;
-			const panelStyle = {};
-			if (geom.x !== void 0 && geom.y !== void 0) {
-				panelStyle.left = `${geom.x}px`;
-				panelStyle.top = `${geom.y}px`;
-				panelStyle.right = "auto";
-				panelStyle.bottom = "auto";
-			}
-			if (geom.width !== void 0) panelStyle.width = `${geom.width}px`;
-			if (geom.height !== void 0) panelStyle.height = `${geom.height}px`;
+			const panelStyle = panelGeometryStyle(geom);
 			return (0, react.createElement)("div", {
 				ref: panelRef,
 				className: `dsc-panel${dragging !== null ? " dsc-panel--dragging" : ""}`,
+				"data-window-drag-exclude": "",
 				style: panelStyle
 			}, (0, react.createElement)("div", {
 				className: "dsc-panel-head",
@@ -2777,6 +2790,7 @@ window.__ModuleLoader__.load({
 			];
 			return (0, react.createElement)("div", {
 				className: "dsc-picker-overlay",
+				"data-window-drag-exclude": "",
 				onClick: props.onClose
 			}, (0, react.createElement)("div", {
 				className: "dsc-picker",
@@ -4079,6 +4093,7 @@ window.__ModuleLoader__.load({
 			const selectedNames = () => workflows.filter((workflow) => selected.has(workflow.id)).map((workflow) => workflow.skillDir !== void 0 ? `${workflow.name} (${t("skillBadge")})` : workflow.name);
 			return (0, react.createElement)("div", {
 				className: "dsc-picker-overlay",
+				"data-window-drag-exclude": "",
 				onClick: props.onClose
 			}, (0, react.createElement)(DragGuard), (0, react.createElement)("div", {
 				className: "dsc-transfer",
@@ -4193,6 +4208,7 @@ window.__ModuleLoader__.load({
 			};
 			return (0, react.createElement)("div", {
 				className: "dsc-picker-overlay",
+				"data-window-drag-exclude": "",
 				onClick: props.onClose
 			}, (0, react.createElement)(DragGuard), (0, react.createElement)("div", {
 				className: "dsc-transfer",
@@ -4395,6 +4411,7 @@ window.__ModuleLoader__.load({
 		function ConfirmDialog(props) {
 			return (0, react.createElement)("div", {
 				className: "dsc-picker-overlay",
+				"data-window-drag-exclude": "",
 				onClick: props.onCancel
 			}, (0, react.createElement)("div", {
 				className: "dsc-confirm",
