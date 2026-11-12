@@ -10,14 +10,7 @@ import { getJson, getList, postJson, postRaw } from './api.ts'
 import { panelStore, usePanelOpen, usePanelTab } from './panel-store.ts'
 import { ComfyUIIcon } from './trigger.tsx'
 import { Lightbox } from './lightbox.js'
-
-/** Panel geometry: pixel position/size once the user dragged or resized. */
-interface PanelGeom {
-  x?: number
-  y?: number
-  width?: number
-  height?: number
-}
+import { movedPanelGeometry, panelGeometryStyle, type PanelGeom } from './panel-geometry.js'
 
 const GEOM_KEY = 'dsh-comfyui-panel-geom'
 
@@ -1137,7 +1130,7 @@ export function ComfyUIPanel({ t }: ComfyUIPanelProps): ReturnType<typeof h> | n
         window.innerWidth,
         window.innerHeight,
       )
-      setGeom((prev) => ({ ...prev, x: pos.x, y: pos.y }))
+      setGeom((prev) => movedPanelGeometry(prev, pos, d.height))
     } else if (dragging === 'resize') {
       const width = Math.max(300, Math.min(720, d.width + event.clientX - d.startX))
       const height = Math.max(200, Math.min(Math.max(300, window.innerHeight - 40), d.height + event.clientY - d.startY))
@@ -1157,18 +1150,10 @@ export function ComfyUIPanel({ t }: ComfyUIPanelProps): ReturnType<typeof h> | n
 
   if (!open) return null
 
-  const panelStyle: Record<string, string> = {}
-  if (geom.x !== undefined && geom.y !== undefined) {
-    panelStyle.left = `${geom.x}px`
-    panelStyle.top = `${geom.y}px`
-    panelStyle.right = 'auto'
-    panelStyle.bottom = 'auto'
-  }
-  if (geom.width !== undefined) panelStyle.width = `${geom.width}px`
-  if (geom.height !== undefined) panelStyle.height = `${geom.height}px`
+  const panelStyle = panelGeometryStyle(geom)
 
   return h('div',
-    { ref: panelRef, className: `dsc-panel${dragging !== null ? ' dsc-panel--dragging' : ''}`, style: panelStyle },
+    { ref: panelRef, className: `dsc-panel${dragging !== null ? ' dsc-panel--dragging' : ''}`, 'data-window-drag-exclude': '', style: panelStyle },
     h('div', {
       className: 'dsc-panel-head',
       onPointerDown: (event: PointerEventLike) => startDrag(event, 'move'),
@@ -1530,7 +1515,7 @@ function LoadPicker(props: {
     { id: 'audio', label: props.t('uploadKind_audio') },
   ]
 
-  return h('div', { className: 'dsc-picker-overlay', onClick: props.onClose },
+  return h('div', { className: 'dsc-picker-overlay', 'data-window-drag-exclude': '', onClick: props.onClose },
     h('div', { className: 'dsc-picker', onClick: (event: { stopPropagation: () => void }) => event.stopPropagation() },
       h('div', { className: 'dsc-picker-bar' },
         h('div', { className: 'dsc-picker-tabs' },
@@ -2856,7 +2841,7 @@ function ExportDialog(props: {
       .filter((workflow) => selected.has(workflow.id))
       .map((workflow) => (workflow.skillDir !== undefined ? `${workflow.name} (${t('skillBadge')})` : workflow.name))
 
-  return h('div', { className: 'dsc-picker-overlay', onClick: props.onClose },
+  return h('div', { className: 'dsc-picker-overlay', 'data-window-drag-exclude': '', onClick: props.onClose },
     h(DragGuard),
     h('div', {
       className: 'dsc-transfer',
@@ -2986,7 +2971,7 @@ function ImportDialog(props: {
     else props.onClose()
   }
 
-  return h('div', { className: 'dsc-picker-overlay', onClick: props.onClose },
+  return h('div', { className: 'dsc-picker-overlay', 'data-window-drag-exclude': '', onClick: props.onClose },
     h(DragGuard),
     h('div', {
       className: 'dsc-transfer',
@@ -3214,7 +3199,7 @@ function ConfirmDialog(props: {
   onConfirm: () => void
   onCancel: () => void
 }): ReturnType<typeof h> {
-  return h('div', { className: 'dsc-picker-overlay', onClick: props.onCancel },
+  return h('div', { className: 'dsc-picker-overlay', 'data-window-drag-exclude': '', onClick: props.onCancel },
     h('div', { className: 'dsc-confirm', onClick: (event: { stopPropagation: () => void }) => event.stopPropagation() },
       h('div', { className: 'dsc-confirm-title' }, props.title),
       h('div', { className: 'dsc-confirm-body' }, props.body),

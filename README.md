@@ -27,6 +27,13 @@
 > 安装（desktop profile，装完需重启 DSH）：
 > `"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add github:huohua-dev/dsh-comfyui#dist`
 
+### 0.6.5-local.1 本地修复
+
+- **子目录工作流（#29）**：列表保留完整相对路径，查看、分析、提取与库派生匹配使用同一身份；兼容旧版 name 路径、v2 userdata-root path 和 Windows 分隔符。拒绝绝对路径、穿越与隐藏条目。
+- 路由的 `file` 与保存的 `comfyuiFile` 均相对于 `workflows`；不要手动再加 `workflows/`。真实名为 `workflows` 的子目录保留，历史前缀歧义不会被猜测改绑。
+- 面板仅移动但未缩放时保留高度约束；自定义可见浮层声明 macOS 窗口拖动排除，不改全局样式。
+- 本地包仅做离线回归，未安装到 DSH、未连接真实 ComfyUI、未验证原生窗口交互；现有截图未更新。
+
 ### 0.6.0 相对上游 0.5.4 的变化
 
 - **在对话里做视频**：内置 `h3_t2v` 模板（MiniMax H3 文生视频，10Eros TURBO），按名字传 `prompt / width / height / seconds / seed / steps`，时长按秒换算帧数（3 秒 = 73 帧，5 秒 = 124 帧）。

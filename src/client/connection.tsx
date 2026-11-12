@@ -132,7 +132,7 @@ function subscribe(listener: () => void): () => void {
 export function ConnectionToast({ t }: ConnectionToastProps): ReturnType<typeof h> | null {
   const conn = useSyncExternalStore(subscribe, getConnState, getConnState)
   if (conn.status === 'hidden') return null
-  return h('div', { className: `dsc-conn-toast dsc-conn-toast--${conn.status}`, role: 'status' },
+  return h('div', { className: `dsc-conn-toast dsc-conn-toast--${conn.status}`, 'data-window-drag-exclude': '', role: 'status' },
     h('span', { className: 'dsc-conn-toast-dot', 'aria-hidden': true }),
     h('div', { className: 'dsc-conn-toast-body' },
       conn.status === 'fail'

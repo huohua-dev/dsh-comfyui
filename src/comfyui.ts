@@ -79,7 +79,8 @@ export interface ComfyUIJobsResponse {
 /** One entry of a user-data directory listing (/v2/userdata). */
 export interface ComfyUIUserDataEntry {
   name: string
-  path: string
+  /** v2 userdata-root path; absent on legacy relative-name listings. */
+  path?: string
   type: 'file' | 'directory'
   size?: number
   modified?: number
@@ -526,7 +527,7 @@ export class ComfyUIClient {
       if (!Array.isArray(legacy)) return []
       return legacy.map((item) => {
         const rel = (typeof item === 'string' ? item : item.path).replace(/\\/g, '/')
-        const entry: ComfyUIUserDataEntry = { name: rel, path: `${subdir}/${rel}`, type: 'file' }
+        const entry: ComfyUIUserDataEntry = { name: rel, type: 'file' }
         if (typeof item !== 'string' && item.size !== undefined) entry.size = item.size
         if (typeof item !== 'string' && item.modified !== undefined) entry.modified = item.modified
         return entry
@@ -534,7 +535,7 @@ export class ComfyUIClient {
     }
     if (!Array.isArray(data)) return []
     if (typeof data[0] === 'string') {
-      return (data as string[]).map((name) => ({ name, path: `${subdir}/${name}`, type: 'file' as const }))
+      return (data as string[]).map((name) => ({ name, type: 'file' as const }))
     }
     return data as ComfyUIUserDataEntry[]
   }

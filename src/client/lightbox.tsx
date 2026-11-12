@@ -37,7 +37,7 @@ export function Lightbox({ t, images, kinds, index, onClose, onIndex }: Lightbox
       : kind === 'image'
         ? h('img', { className: 'dsc-lightbox-img', src, alt: '' })
         : h('div', { className: 'dsc-lightbox-media' }, src)
-  return h('div', { className: 'dsc-lightbox', onClick: onClose },
+  return h('div', { className: 'dsc-lightbox', 'data-window-drag-exclude': '', onClick: onClose },
     h('div', { className: 'dsc-lightbox-body', onClick: (event: { stopPropagation: () => void }) => event.stopPropagation() },
       h('button', {
         className: 'dsc-lightbox-close',

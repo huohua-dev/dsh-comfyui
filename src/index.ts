@@ -16,6 +16,7 @@ import { ComfyUIStore } from './store.js'
 import { QueueTracker } from './queue.js'
 import { convertGraphToApi, flattenDynamicCombos } from './convert.js'
 import { analyzeGraph } from './analyze.js'
+import { normalizeWorkflowPath, requireWorkflowPath, workflowEntryPath } from './workflow-path.js'
 import { ProgressTracker } from './progress.js'
 import { COMFYUI_SKILL } from './skill.js'
 import type { StoredWorkflow } from './store.js'
@@ -320,31 +321,34 @@ export async function apply(ctx: Context, entryConfig: Partial<Record<keyof Conf
       const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
       const entries = await client.listUserData('workflows')
       const library = await store.listWorkflows()
-      return entries
-        // Dot entries are ComfyUI bookkeeping (e.g. `.index.json`), not graphs.
-        .filter((entry) => entry.type === 'file' && entry.name.endsWith('.json')
-          && entry.name.split(/[\\/]/).every((segment) => !segment.startsWith('.')))
-        .map((entry) => {
-          const derived = library.filter((workflow) => workflow.comfyuiFile === entry.name)
-          return {
-            name: entry.name,
-            size: entry.size,
-            modified: entry.modified,
-            extracted: derived.length > 0,
-            derived: derived.map((workflow) => ({ libraryId: workflow.id, name: workflow.name })),
-          }
-        })
+      return entries.flatMap((entry) => {
+        const file = workflowEntryPath(entry)
+        if (entry.type !== 'file' || file === undefined) return []
+        // Compare provenance without rewriting existing library records.
+        const derived = library.filter((workflow) => normalizeWorkflowPath(workflow.comfyuiFile) === file)
+        return [{
+          name: file,
+          size: entry.size,
+          modified: entry.modified,
+          extracted: derived.length > 0,
+          derived: derived.map((workflow) => ({ libraryId: workflow.id, name: workflow.name })),
+        }]
+      })
     },
     getComfyWorkflow: async (file) => {
+      const relative = requireWorkflowPath(file)
       const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
-      return client.getUserDataFile(`workflows/${file}`)
+      return client.getUserDataFile(`workflows/${relative}`)
     },
     analyzeComfyWorkflow: async (file) => {
+      const relative = requireWorkflowPath(file)
       const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
-      const graph = await client.getUserDataFile(`workflows/${file}`)
+      const graph = await client.getUserDataFile(`workflows/${relative}`)
       return analyzeGraph(graph)
     },
-    extractComfyWorkflow: async ({ file, mode }) => {
+    extractComfyWorkflow: async ({ file: inputFile, mode }) => {
+      const file = normalizeWorkflowPath(inputFile)
+      if (file === undefined) return { ok: false, error: '无效的工作流相对路径' }
       const client = runtime.createClient(await resolveApiKey(ctx, resolved.apiKeyEnv))
       const [graph, objectInfo] = await Promise.all([
         client.getUserDataFile(`workflows/${file}`),
